@@ -142,5 +142,6 @@ def main(args):
     args.logger.info(f'NAS Training ends: {round(end - start, 4)} seconds')
 
 if __name__ == "__main__":
+    print("Running IC_NAS.py")
     args = arguments()
     main(args)
