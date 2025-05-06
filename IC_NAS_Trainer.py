@@ -1,0 +1,206 @@
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+from utility import get_trainable_parameters, get_optimizer_and_scheduler
+import timeit
+import copy
+import evaluate
+from ofm import OFM
+import matplotlib.pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
+from torchvision.utils import make_grid
+import numpy as np
+from torchvision.transforms import Resize
+
+class IC_NAS_Trainer:
+    def __init__(self, args):
+        for key, value in vars(args).items():
+            setattr(self, key, value)
+        self.best_smallest_submodel_accuracy = 0
+        self.scheduler = None
+        self.loss_func = nn.CrossEntropyLoss()
+
+        #tensorboard writer
+        self.tensorboard_dir = f'{self.log_dir}/tensorboard'
+        self.writer = SummaryWriter(self.tensorboard_dir)
+        self.logger.info(f"TensorBoard logs saved to: {self.tensorboard_dir}")
+
+    def visualize_predictions(self, model, model_name, step):
+        model.eval()
+        model = nn.DataParallel(model).to(self.device)
+        images_to_log = []
+        max_images = 10
+        resize = Resize((224, 224))  # Resize to 224x224
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(self.test_dataloader):
+                if batch_idx > 0:
+                    break
+                batch = {k: v.to(self.device) for k, v in batch.items()}
+                outputs = model(pixel_values=batch["pixel_values"])
+                preds = torch.argmax(outputs.logits, dim=1)
+                images = batch["pixel_values"][:max_images]
+                gt_indices = batch["labels"][:max_images].cpu().numpy()
+                pred_indices = preds[:max_images].cpu().numpy()
+
+                mean = torch.tensor(self.processor.image_mean).view(1, 3, 1, 1).to(self.device)
+                std = torch.tensor(self.processor.image_std).view(1, 3, 1, 1).to(self.device)
+                images = images * std + mean
+                images = images.clamp(0, 1)
+
+                for i in range(min(max_images, images.size(0))):
+                    img = images[i]
+                    gt_text = self.labels[gt_indices[i]] if hasattr(self, 'labels') and self.labels else f"Class {gt_indices[i]}"
+                    pred_text = self.labels[pred_indices[i]] if hasattr(self, 'labels') and self.labels else f"Class {pred_indices[i]}"
+
+                    # Ground truth text image
+                    fig, ax = plt.subplots(1, 1, figsize=(2, 2))
+                    ax.text(0.5, 0.5, gt_text, ha='center', va='center', fontsize=12)
+                    ax.axis('off')
+                    plt.tight_layout()
+                    gt_img = self.fig_to_tensor(fig).to(self.device)
+                    gt_img = resize(gt_img)  # Resize to [3, 224, 224]
+                    plt.close(fig)
+
+                    # Predicted text image
+                    fig, ax = plt.subplots(1, 1, figsize=(2, 2))
+                    ax.text(0.5, 0.5, pred_text, ha='center', va='center', fontsize=12)
+                    ax.axis('off')
+                    plt.tight_layout()
+                    pred_img = self.fig_to_tensor(fig).to(self.device)
+                    pred_img = resize(pred_img)  # Resize to [3, 224, 224]
+                    plt.close(fig)
+
+                    images_to_log.extend([img, gt_img, pred_img])
+
+        if images_to_log:
+            grid = make_grid(images_to_log, nrow=3, padding=5, normalize=True)
+            self.writer.add_image(f"{model_name}/Predictions", grid, step)
+
+        model = model.module
+        model = model.to('cpu')
+
+    def fig_to_tensor(self, fig):
+        """Convert matplotlib figure to tensor."""
+        fig.canvas.draw()
+        # Get RGBA buffer and convert to RGB
+        buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        buf = buf.reshape(fig.canvas.get_width_height()[::-1] + (4,))  # [H, W, 4]
+        img = buf[:, :, :3]  # Discard alpha channel [H, W, 3]
+        img = img.transpose(2, 0, 1)  # [C, H, W]
+        img = torch.from_numpy(img).float() / 255.0  # [C, H, W], 0-1 range
+        return img
+
+    def eval(self, model, map=None):
+        accuracy_metric = evaluate.load("accuracy")
+        model = model.eval()
+        model = nn.DataParallel(model).to(self.device)
+        predictions, labels = [], []
+        for inputs in tqdm(self.test_dataloader, disable=self.no_verbose):
+            torch.cuda.empty_cache()
+            with torch.no_grad():
+                outputs = model(pixel_values=inputs["pixel_values"].to(self.device))
+                preds = torch.argmax(outputs.logits, dim=1)
+                predictions.extend(preds.cpu().numpy())
+                labels.extend(inputs["labels"].cpu().numpy())
+        model = model.module
+        model = model.to('cpu')
+        accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+        return accuracy["accuracy"], None, map
+
+    def training_step(self, model, inputs):
+        local_grad = {k: v.cpu() for k, v in model.state_dict().items()}
+        model = model.train()
+        model = nn.DataParallel(model).to(self.device)
+        self.optimizer.zero_grad()
+        outputs = model(pixel_values=inputs["pixel_values"].to(self.device))
+        loss = self.loss_func(outputs.logits, inputs["labels"].to(self.device))
+        loss.backward()
+        self.optimizer.step()
+        self.scheduler.step()
+        model = model.module
+        model = model.to('cpu')
+        with torch.no_grad():
+            for k, v in model.state_dict().items():
+                local_grad[k] = local_grad[k] - v.cpu()
+        self.supermodel.apply_grad(local_grad, model.config.arch.get('remove_layer_idx', []))
+        return {"train_loss": loss.item(), "params": model.config.num_parameters}
+
+    def single_step(self, submodel, data, model_size, do_test):
+        trainable_params = get_trainable_parameters(submodel, self.trainable)
+        self.optimizer, self.scheduler = get_optimizer_and_scheduler(
+            trainable_params, self.lr, self.weight_decay, self.scheduler
+        )
+        start_train = timeit.default_timer()
+        metrics = self.training_step(submodel, data)
+        end_train = timeit.default_timer()
+        if do_test:
+            start_test = timeit.default_timer()
+            accuracy, _, _ = self.eval(submodel)
+            end_test = timeit.default_timer()
+            if model_size == 'Smallest' and accuracy > self.best_smallest_submodel_accuracy:
+                self.supermodel.save_ckpt(f'{self.log_dir}Best/')
+                self.best_smallest_submodel_accuracy = accuracy
+            metrics['test_accuracy'] = accuracy
+            self.logger.info(
+                f'\t{model_size} submodel train time: {round(end_train - start_train, 4)}, '
+                f'test time: {round(end_test - start_test, 4)}, metrics: {metrics}'
+            )
+        else:
+            self.logger.info(
+                f'\t{model_size} submodel train time: {round(end_train - start_train, 4)}, metrics: {metrics}'
+            )
+
+    def train(self):
+        global_step = 0
+        for epoch in range(self.epochs):
+            self.logger.info(f'EPOCH {epoch}: starts')
+            if self.reorder == 'per_epoch':
+                if self.reorder_method == 'magnitude':
+                    self.supermodel.mlp_layer_reordering()
+                elif self.reorder_method == 'wanda':
+                    self.supermodel.mlp_layer_reordering(self.reorder_dataloader, 'wanda')
+            start_epoch = timeit.default_timer()
+            for idx, inputs in enumerate(tqdm(self.train_dataloader, disable=self.no_verbose)):
+                global_step += 1
+                if self.reorder == 'per_batch':
+                    if self.reorder_method == 'magnitude':
+                        self.supermodel.mlp_layer_reordering()
+                    elif self.reorder_method == 'wanda':
+                        self.supermodel.mlp_layer_reordering(self.reorder_dataloader, 'wanda')
+                do_test = (idx == len(self.train_dataloader) - 1)
+                save_interval = len(self.train_dataloader) // self.save_interval if self.save_interval else 1
+                do_save = ((idx + 1) % save_interval == 0)
+
+                do_test = do_test or do_save
+                submodels = []
+                if 'l' in self.sandwich:
+                    submodel, submodel.config.num_parameters, submodel.config.arch = (
+                        copy.deepcopy(self.supermodel.model),
+                        self.supermodel.total_params,
+                        {'remove_layer_idx': []},
+                    )
+                    self.single_step(submodel, inputs, 'Largest', do_test)
+                    submodels.append(('Largest', submodel))
+                if 's' in self.sandwich:
+                    submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.smallest_model()
+                    self.single_step(submodel, inputs, 'Smallest', do_test)
+                    submodels.append(('Smallest', submodel))
+                if 'm' in self.sandwich:
+                    submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.random_resource_aware_model()
+                    self.single_step(submodel, inputs, 'Medium', do_test)
+                    submodels.append(('Medium', submodel))
+
+
+                if do_save:
+                    self.supermodel.save_ckpt(f'{self.log_dir}')
+                    self.logger.info(f'\tInterval {(idx + 1) // save_interval}: Model checkpoint saved.')
+
+                    for model_name, submodel in submodels:
+                        self.visualize_predictions(submodel, model_name, global_step)
+
+            end_epoch = timeit.default_timer()
+            self.supermodel.save_ckpt(f'{self.log_dir}')
+            self.logger.info(f'EPOCH {epoch}: ends {round(end_epoch - start_epoch, 4)} seconds. Model checkpoint saved.')
+        # Close TensorBoard writer
+        self.writer.close()

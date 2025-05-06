@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug NAS",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/nas.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--dataset=mito",
+        "--epochs=10",
+        "--batch_size=4",
+        "--trainable=em",
+        "--lr=1e-5",
+        "--weight_decay=0",
+        "--train_subset=100",
+        "--test_subset=50",
+        "--train_prompt=p",
+        "--test_prompt=p",
+        "--loss=dice",
+        "--sandwich=lsm",
+        "--no_verbose",
+        "--save_interval=4"
+      ]
+    }
+  ]
+}
