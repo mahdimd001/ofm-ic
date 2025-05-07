@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
 import numpy as np
 from torchvision.transforms import Resize
+from ptflops import get_model_complexity_info
 
 class IC_NAS_Trainer:
     def __init__(self, args):
@@ -24,6 +25,50 @@ class IC_NAS_Trainer:
         self.tensorboard_dir = f'{self.log_dir}/tensorboard'
         self.writer = SummaryWriter(self.tensorboard_dir)
         self.logger.info(f"TensorBoard logs saved to: {self.tensorboard_dir}")
+    def _log_parameter_counts(self):
+        """Log the number of parameters in each part of the model."""
+        model = self.supermodel.model
+        embedding_params = sum(p.numel() for p in model.vit.embeddings.parameters())
+        encoder_params = sum(p.numel() for p in model.vit.encoder.parameters())
+        classifier_params = sum(p.numel() for p in model.classifier.parameters())
+        total_params = embedding_params + encoder_params + classifier_params
+        self.logger.info(
+            f"Model parameter counts:\n"
+            f"  vit.embedding: {embedding_params:,} parameters\n"
+            f"  vit.encoder: {encoder_params:,} parameters\n"
+            f"  classifier: {classifier_params:,} parameters\n"
+            f"  Total: {total_params:,} parameters"
+        )
+
+    def _compute_flops(self, model):
+        """Compute FLOPs for the model in GFLOPs, dataset-agnostic."""
+        model.eval()
+        model = model.to('cpu')  # ptflops works on CPU
+
+        # Determine input resolution from processor or args
+        if hasattr(self, 'processor') and hasattr(self.processor, 'image_size'):
+            if isinstance(self.processor.image_size, dict):
+                height = self.processor.image_size.get('height', 224)
+                width = self.processor.image_size.get('width', 224)
+            else:
+                height = width = self.processor.image_size
+        elif hasattr(self, 'image_size'):
+            height = width = self.image_size
+        else:
+            height = width = 224  # Default for ViT-Base
+        input_res = (3, height, width)
+        #self.logger.info(f"Computing FLOPs with input resolution: {input_res}")
+
+        macs, params = get_model_complexity_info(
+            model,
+            input_res,
+            as_strings=False,
+            print_per_layer_stat=False,
+            verbose=False
+        )
+        flops = macs * 2  # MACs to FLOPs (multiply by 2 for add and multiply)
+        gflops = flops / 1e9  # Convert to GFLOPs
+        return gflops
 
     def visualize_predictions(self, model, model_name, step):
         model.eval()
@@ -134,6 +179,10 @@ class IC_NAS_Trainer:
         start_train = timeit.default_timer()
         metrics = self.training_step(submodel, data)
         end_train = timeit.default_timer()
+        # Compute FLOPs
+        flops = self._compute_flops(submodel)
+        metrics['flops'] = flops
+
         if do_test:
             start_test = timeit.default_timer()
             accuracy, _, _ = self.eval(submodel)
@@ -144,11 +193,18 @@ class IC_NAS_Trainer:
             metrics['test_accuracy'] = accuracy
             self.logger.info(
                 f'\t{model_size} submodel train time: {round(end_train - start_train, 4)}, '
-                f'test time: {round(end_test - start_test, 4)}, metrics: {metrics}'
+                f'test time: {round(end_test - start_test, 4)}, '
+                f'metrics: {{train_loss: {metrics["train_loss"]:.4f}, '
+                f'params: {metrics["params"]:,}, '
+                f'flops: {metrics["flops"]:.2f} GFLOPs, '
+                f'test_accuracy: {metrics["test_accuracy"]:.4f}}}'
             )
         else:
             self.logger.info(
-                f'\t{model_size} submodel train time: {round(end_train - start_train, 4)}, metrics: {metrics}'
+                f'\t{model_size} submodel train time: {round(end_train - start_train, 4)}, '
+                f'metrics: {{train_loss: {metrics["train_loss"]:.4f}, '
+                f'params: {metrics["params"]:,}, '
+                f'flops: {metrics["flops"]:.2f} GFLOPs}}'
             )
 
     def train(self):

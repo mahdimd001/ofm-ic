@@ -15,6 +15,7 @@ import timeit
 import numpy as np
 import sys
 import os
+from huggingface_hub import login
 
 
 def main(args):
@@ -27,14 +28,45 @@ def main(args):
     init_logs(log_file_name, args, log_dir)
     args.logger = get_logger()
 
+    # Authenticate for ImageNet-1k
+    if args.dataset == "imagenet-1k" and args.huggingface_token:
+        login(token=args.huggingface_token)
+        args.logger.info("Authenticated with Hugging Face token for ImageNet-1k")
+
     # Load dataset
-    dataset = load_dataset(args.dataset, cache_dir=args.cache_dir)
+    dataset = load_dataset(args.dataset, cache_dir=args.cache_dir,trust_remote_code=True)
+
+
     if args.dataset == "cifar100":
         dataset = dataset.rename_column("fine_label", "label")
-    train_val = dataset["train"].train_test_split(test_size=0.2, seed=123)
-    dataset["train"] = train_val["train"]
-    dataset["validation"] = train_val["test"]
-    labels = dataset["train"].features["label"].names
+        train_val = dataset["train"].train_test_split(test_size=0.2, seed=123)
+        dataset["train"] = train_val["train"]
+        dataset["validation"] = train_val["test"]
+    elif args.dataset == "imagenet-1k":
+        # ImageNet-1k already has train/validation splits
+        if "validation" not in dataset:
+            args.logger.warning("No validation split found, splitting train set")
+            train_val = dataset["train"].train_test_split(test_size=0.2, seed=123)
+            dataset["train"] = train_val["train"]
+            dataset["validation"] = train_val["test"]
+        if args.subsample == True:
+            args.logger.info("Subsampling ImageNet-1k: 5000 training, 1000 validation images")
+            train_subset = dataset["train"].train_test_split(train_size=5000, seed=123, stratify_by_column="label")["train"]
+            val_subset = dataset["validation"].train_test_split(train_size=1000, seed=123, stratify_by_column="label")["train"]
+            dataset["train"] = train_subset
+            dataset["validation"] = val_subset
+        dataset['train'] = dataset['train'].rename_column("image", "img")
+        dataset['validation'] = dataset['validation'].rename_column("image", "img")
+    else:  # cifar10
+        train_val = dataset["train"].train_test_split(test_size=0.2, seed=123)
+        dataset["train"] = train_val["train"]
+        dataset["validation"] = train_val["test"]
+
+
+
+
+    
+    
 
     labels = dataset["train"].features["label"].names
     args.labels = labels
@@ -142,6 +174,5 @@ def main(args):
     args.logger.info(f'NAS Training ends: {round(end - start, 4)} seconds')
 
 if __name__ == "__main__":
-    print("Running IC_NAS.py")
     args = arguments()
     main(args)

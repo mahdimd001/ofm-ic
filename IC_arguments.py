@@ -6,10 +6,10 @@ def arguments():
                         help="Model name or path")
     parser.add_argument("--processor_name", type=str, default="google/vit-base-patch16-224",
                         help="Processor name or path")
-    parser.add_argument("--dataset", type=str, default="cifar100",
+    parser.add_argument("--dataset", type=str, default="imagenet-1k",
                         choices=["cifar10", "cifar100", "imagenet-1k"],
                         help="Dataset name")
-    parser.add_argument("--cache_dir", type=str, default="/work/LAS/jannesar-lab/msamani/.cache",
+    parser.add_argument("--cache_dir", type=str, default="/lustre/hdd/LAS/jannesar-lab/msamani/.cache",
                         help="Directory to cache datasets and models")
     parser.add_argument("--batch_size", type=int, default=32,
                         help="Batch size for training and evaluation")
@@ -39,4 +39,8 @@ def arguments():
     parser.add_argument("--sandwich", type=str, default="lsm",
                         choices=["l", "s", "m", "ls", "lm", "sm", "lsm"],
                         help="Sandwich configuration for training (l:largest, s:smallest, m:medium)")
+    parser.add_argument("--huggingface_token", type=str, default="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",
+                        help="Hugging Face token for ImageNet-1k dataset")
+    parser.add_argument("--subsample", type=bool, default=True,
+                        help="Subsample ImageNet-1k dataset")
     return parser.parse_args()
