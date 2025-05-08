@@ -43,4 +43,6 @@ def arguments():
                         help="Hugging Face token for ImageNet-1k dataset")
     parser.add_argument("--subsample", type=bool, default=True,
                         help="Subsample ImageNet-1k dataset")
+    parser.add_argument("--tensorboard_visual", type=bool, default=False,
+                        help="Enable TensorBoard visualization after saving checkpoints")
     return parser.parse_args()

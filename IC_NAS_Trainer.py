@@ -251,9 +251,10 @@ class IC_NAS_Trainer:
                 if do_save:
                     self.supermodel.save_ckpt(f'{self.log_dir}')
                     self.logger.info(f'\tInterval {(idx + 1) // save_interval}: Model checkpoint saved.')
-
-                    for model_name, submodel in submodels:
-                        self.visualize_predictions(submodel, model_name, global_step)
+                    
+                    if self.tensorboard_visual:
+                        for model_name, submodel in submodels:
+                            self.visualize_predictions(submodel, model_name, global_step)
 
             end_epoch = timeit.default_timer()
             self.supermodel.save_ckpt(f'{self.log_dir}')
