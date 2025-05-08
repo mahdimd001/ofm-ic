@@ -1,4 +1,4 @@
-# SuperSAM: Crafting a SAM supernetwork via structured pruning and unstructured parameter prioritization
+# SuperSAM: 
 This is the official implementation for the paper:
 
 

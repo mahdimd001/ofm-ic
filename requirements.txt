@@ -14,4 +14,25 @@ mamba-ssm
 datasets
 peft
 trl
-pillow # for clip image processing
+pillow # for clip image processingabsl-py==2.2.2
+evaluate==0.4.3
+huggingface_hub==0.30.1
+lm_eval==0.4.8
+matplotlib==3.10.1
+monai==1.4.0
+numpy==2.2.5
+opencv_contrib_python==4.11.0.86
+opencv_python==4.11.0.86
+opentuner==0.8.8
+patchify==0.2.3
+peft==0.15.1
+Pillow==11.2.1
+ptflops==0.7.4
+pycocotools==2.0.8
+scikit_learn==1.6.1
+setuptools==65.5.0
+tifffile==2025.3.30
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+tqdm==4.67.1
+transformers==4.52.0.dev0

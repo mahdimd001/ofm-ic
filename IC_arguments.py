@@ -6,7 +6,7 @@ def arguments():
                         help="Model name or path")
     parser.add_argument("--processor_name", type=str, default="google/vit-base-patch16-224",
                         help="Processor name or path")
-    parser.add_argument("--dataset", type=str, default="imagenet-1k",
+    parser.add_argument("--dataset", type=str, default="cifar100",
                         choices=["cifar10", "cifar100", "imagenet-1k"],
                         help="Dataset name")
     parser.add_argument("--cache_dir", type=str, default="/lustre/hdd/LAS/jannesar-lab/msamani/.cache",
