@@ -1,6 +1,6 @@
 # SuperViT-NAS: Crafting Efficient Vision Transformers for Image Classification through Neural Architecture Search
 
-SuperViT-NAS is a Neural Architecture Search (NAS) framework for crafting efficient Vision Transformers (ViTs) for image classification. It leverages structured pruning and parameter prioritization to create a scalable supernetwork, optimizing performance on datasets like CIFAR-10, CIFAR-100, and ImageNet-1k.
+SuperViT-NAS is a Neural Architecture Search (NAS) framework for crafting efficient Vision Transformers (ViTs) for image classification. It leverages structured pruning and parameter prioritization to create a supernetwork, optimizing performance on datasets like CIFAR-10, CIFAR-100, and ImageNet-1k.
 
 ## Features
 
@@ -11,21 +11,21 @@ SuperViT-NAS is a Neural Architecture Search (NAS) framework for crafting effici
 - **Training Configurations**:
   - Sandwich training: Largest (`l`), Smallest (`s`), Medium (`m`) submodels.
   - Trainable parameters: ViT (`e`), classifier (`m`), embeddings (`p`).
-- **Checkpointing & Resuming**: Saves checkpoints per epoch and supports resuming from any checkpoint.
+- **Checkpointing & Resuming**: Saves checkpoints per epoch
 - **Visualization**: TensorBoard with 3-column grids (image, predicted class, ground truth).
 - **Performance**:
   - CIFAR-10: \~96% accuracy.
-  - CIFAR-100: \~80-90% accuracy.
-  - ImageNet-1k: \~70-80% (subset) or \~80-85% (full).
-  - FLOPs: \~50.6-50.7 GFLOPs.
+  - CIFAR-100: \~76-85% accuracy.
+  - ImageNet-1k: \~0% (subset) or \~0% (full).
+  - FLOPs: \~25.6-35.7 GFLOPs.
 
 ## Installation
 
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/yourusername/supervit-nas.git
-   cd supervit-nas
+   git clone https://github.com/mahdimd001/ofm-ic.git
+   cd ofm-ic-main
    ```
 
 2. Create a virtual environment and install dependencies:
@@ -48,37 +48,15 @@ SuperViT-NAS is a Neural Architecture Search (NAS) framework for crafting effici
 
 ## Usage
 
-Run the training script with desired arguments. Examples:
+change the arguments in "IC_arguments.py" and then::
 
 ### CIFAR-10
 
 ```bash
-python IC_nas.py --dataset cifar10 --batch_size 32 --epochs 50 --lr 5e-5 --trainable em --reorder per_epoch --reorder_method magnitude --cache_dir ./cache --save_interval 5
+python IC_nas.py
 ```
 
-### CIFAR-100
 
-```bash
-python IC_nas.py --dataset cifar100 --batch_size 32 --epochs 50 --lr 5e-5 --trainable em --reorder per_epoch --reorder_method magnitude --cache_dir ./cache --save_interval 5
-```
-
-### ImageNet-1k (Subset: 5,000 train, 1,000 validation)
-
-```bash
-python IC_nas.py --dataset imagenet-1k --batch_size 128 --epochs 100 --lr 1e-4 --trainable em --reorder per_epoch --reorder_method magnitude --cache_dir ./cache --save_interval 5 --huggingface_token <your_token> --subsample True
-```
-
-### ImageNet-1k (Full)
-
-```bash
-python IC_nas.py --dataset imagenet-1k --batch_size 128 --epochs 100 --lr 1e-4 --trainable em --reorder per_epoch --reorder_method magnitude --cache_dir ./cache --save_interval 5 --huggingface_token <your_token> --subsample False
-```
-
-### Resume Training
-
-```bash
-python IC_nas.py --dataset imagenet-1k --batch_size 128 --epochs 100 --lr 1e-4 --trainable em --reorder per_epoch --reorder_method magnitude --cache_dir ./cache --save_interval 5 --huggingface_token <your_token> --subsample True --resume logs/.../checkpoints/epoch_10.pth
-```
 
 ## Arguments
 
@@ -132,13 +110,7 @@ python IC_nas.py --dataset imagenet-1k --batch_size 128 --epochs 100 --lr 1e-4 -
   huggingface-cli login
   ```
 
-- **Dataset Issues**:
 
-  ```python
-  from datasets import load_dataset
-  dataset = load_dataset('<dataset>', cache_dir='./cache')
-  print(dataset['train'].column_names)
-  ```
 
 - **Low Accuracy**:
 
@@ -148,28 +120,23 @@ python IC_nas.py --dataset imagenet-1k --batch_size 128 --epochs 100 --lr 1e-4 -
 - **Checkpoint Issues**:
 
   ```bash
-  ls logs/<timestamp>_dataset[...]/checkpoints/
+ NA
   ```
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request.
+NA
 
 ## License
 
-MIT License
+NA
 
 ## Citation
 
 If you use SuperViT-NAS in your research, please cite:
 
 ```
-@article{supervitnas2025,
-  title={SuperViT-NAS: Engineering Efficient Vision Transformers for Image Classification through Neural Architecture Search},
-  author={Your Name},
-  journal={TBD},
-  year={2025}
-}
+NA
 ```
 
 ---
