@@ -343,3 +343,147 @@ def sam_weight_reorder(model, dataloader=None, method='magnitude'):
         score_dist = movement_reordering(model,dataloader)
         
     return model, score_dist
+
+
+
+
+
+
+
+
+
+
+
+
+
+# work fine (samani)
+def vit_magnitude_reordering(vit_layers):
+    """Compute magnitude-based importance scores for ViT MLP blocks."""
+    score_dist = {}
+    for i, layer in enumerate(vit_layers):
+        W1 = layer.intermediate.dense.weight  # [3072, 768]
+        W2 = layer.output.dense.weight  # [768, 3072]
+        b1 = layer.intermediate.dense.bias
+        row_sums = W1.abs().sum(dim=1)
+        column_sums = W2.abs().sum(dim=0)
+        avg_sums = (row_sums + column_sums) / 2
+        score_dist[i] = avg_sums.flatten().tolist()
+        _, sorted_indices = avg_sums.sort(descending=True)
+        W1_sorted = W1[sorted_indices, :]
+        W2_sorted = W2[:, sorted_indices]
+        b1_sorted = b1[sorted_indices]
+        layer.intermediate.dense.weight.data = W1_sorted
+        layer.output.dense.weight.data = W2_sorted
+        layer.intermediate.dense.bias.data = b1_sorted
+    return score_dist
+
+# not tested
+def vit_wanda_reordering(model, dataloader):
+    """Compute Wanda-based importance scores for ViT MLP blocks."""
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model = model.to(device)
+    model.eval()
+    global wanda_sums
+    wanda_sums = {i: [[], []] for i in range(len(model.vit.encoder.layer))}
+    hooks_1, hooks_2 = [], []
+    for idx, layer in enumerate(model.vit.encoder.layer):
+        hook_1 = layer.intermediate.dense.register_forward_hook(partial(mlp_forward_hook, layer=idx, lin=1))
+        hook_2 = layer.output.dense.register_forward_hook(partial(mlp_forward_hook, layer=idx, lin=2))
+        hooks_1.append(hook_1)
+        hooks_2.append(hook_2)
+    with torch.no_grad():
+        for batch in dataloader:
+            inputs = batch["pixel_values"].to(device)
+            model(inputs)
+    for hook_1, hook_2 in zip(hooks_1, hooks_2):
+        hook_1.remove()
+        hook_2.remove()
+    score_dist = []
+    for idx, layer in enumerate(model.vit.encoder.layer):
+        avg_sums = ((sum(wanda_sums[idx][0]) / len(wanda_sums[idx][0])) + (sum(wanda_sums[idx][1]) / len(wanda_sums[idx][1]))) / 2
+        score_dist.append(avg_sums)
+        _, sorted_indices = avg_sums.sort(descending=True)
+        W1 = layer.intermediate.dense.weight
+        W2 = layer.output.dense.weight
+        b1 = layer.intermediate.dense.bias
+        W1_sorted = W1[sorted_indices, :]
+        W2_sorted = W2[:, sorted_indices]
+        b1_sorted = b1[sorted_indices]
+        layer.intermediate.dense.weight.data = W1_sorted
+        layer.output.dense.weight.data = W2_sorted
+        layer.intermediate.dense.bias.data = b1_sorted
+    return score_dist
+
+def vit_movement_reordering(model, dataloader):
+    """Compute movement-based importance scores for ViT MLP blocks."""
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    encoder = copy.deepcopy(model.vit.encoder).to(device)
+    encoder.train()
+    loss_func = nn.CrossEntropyLoss()
+    grads = {i: [[], []] for i in range(len(encoder.layer))}
+    randomize_weights(encoder)
+    for batch in dataloader:
+        inputs = batch["pixel_values"].to(device)
+        labels = batch["labels"].to(device)
+        encoder.zero_grad()
+        outputs = encoder(inputs)[0]
+        head = nn.Linear(768, 10).to(device)
+        logits = head(outputs[:, 0, :])
+        loss = loss_func(logits, labels)
+        loss.backward()
+        for idx, layer in enumerate(encoder.layer):
+            G1 = layer.intermediate.dense.weight.grad
+            G2 = layer.output.dense.weight.grad
+            if G1 is not None and G2 is not None:
+                row_sums = G1.abs().sum(dim=1)
+                column_sums = G2.abs().sum(dim=0)
+                grads[idx][0].append(row_sums)
+                grads[idx][1].append(column_sums)
+    score_dist = []
+    for idx, layer in enumerate(encoder.layer):
+        grad_row_sums = sum(grads[idx][0]) / len(grads[idx][0]) if grads[idx][0] else torch.zeros(3072, device=device)
+        grad_column_sums = sum(grads[idx][1]) / len(grads[idx][1]) if grads[idx][1] else torch.zeros(3072, device=device)
+        W1 = layer.intermediate.dense.weight
+        W2 = layer.output.dense.weight
+        b1 = layer.intermediate.dense.bias
+        weight_row_sums = W1.abs().sum(dim=1)
+        weight_column_sums = W2.abs().sum(dim=0)
+        avg_row_sums = grad_row_sums.abs() * weight_row_sums
+        avg_column_sums = grad_column_sums.abs() * weight_column_sums
+        avg_sums = (avg_row_sums + avg_column_sums) / 2
+        score_dist.append(avg_sums)
+        _, sorted_indices = avg_sums.sort(descending=True)
+        W1_sorted = W1[sorted_indices, :]
+        W2_sorted = W2[:, sorted_indices]
+        b1_sorted = b1[sorted_indices]
+        layer.intermediate.dense.weight.data = W1_sorted
+        layer.output.dense.weight.data = W2_sorted
+        layer.intermediate.dense.bias.data = b1_sorted
+    return score_dist
+
+#samani for vit support
+def vit_weight_reorder(model, dataloader=None, method='magnitude'):
+    """
+    Reorder weights in ViT's MLP blocks using specified method.
+
+    Args:
+        model (nn.Module): ViT model (e.g., ViTForImageClassification).
+        dataloader (DataLoader, optional): DataLoader for data-dependent methods like Wanda.
+        method (str): Reordering method ('magnitude', 'wanda', 'movement'). Defaults to 'magnitude'.
+
+    Returns:
+        tuple: (model, score_dist)
+            - model: Reordered ViT model.
+            - score_dist: List of importance scores for each MLP block's intermediate dimension.
+    """
+    if method == 'wanda':
+        score_dist = vit_wanda_reordering(model, dataloader)
+    elif method == 'magnitude':
+        vit_layers = model.vit.encoder.layer
+        score_dist = vit_magnitude_reordering(vit_layers)
+    elif method == 'movement':
+        score_dist = vit_movement_reordering(model, dataloader)
+    else:
+        raise ValueError(f"Unsupported reordering method: {method}")
+
+    return model, score_dist

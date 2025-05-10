@@ -20,7 +20,7 @@ from .model_downsize import (
     clip_module_handler,
     test_function
 )
-from .weight_reorder import sam_weight_reorder, mask_layers, remove_layers, mlp_masking
+from .weight_reorder import sam_weight_reorder, mask_layers, remove_layers, mlp_masking, vit_weight_reorder
 #from .prune import prune_magnitude, prune_random
 from .param_prioritization import *
 from .utils import calculate_params, save_dict_to_file, load_dict_from_file
@@ -125,9 +125,13 @@ class OFM:
     def largest_model(self):
         return copy.deepcopy(self.model), self.total_params, {}
     
+    #samani change for vit support
     def mlp_layer_reordering(self,dataloader=None,method='magnitude'):
         if "sam" == self.model.config.model_type.lower():
             self.model, score_dist = sam_weight_reorder(self.model,dataloader,method)
+            return score_dist
+        elif "vit" == self.model.config.model_type.lower():
+            self.model, score_dist = vit_weight_reorder(self.model,dataloader,method)
             return score_dist
         else:
             raise NotImplemented(f'Weight reordering not yet implemented for \

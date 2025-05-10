@@ -30,7 +30,7 @@ def arguments():
                         help="Save checkpoint every N steps")
     parser.add_argument("--no_verbose", action="store_true",
                         help="Disable verbose logging")
-    parser.add_argument("--reorder", type=str, default="per_none",
+    parser.add_argument("--reorder", type=str, default="per_epoch",
                         choices=["once", "per_epoch", "per_batch", "none"],
                         help="When to reorder MLP layers")
     parser.add_argument("--reorder_method", type=str, default="magnitude",
