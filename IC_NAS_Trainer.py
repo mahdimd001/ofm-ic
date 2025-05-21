@@ -12,6 +12,8 @@ from torchvision.utils import make_grid
 import numpy as np
 from torchvision.transforms import Resize
 from ptflops import get_model_complexity_info
+from fvcore.nn import FlopCountAnalysis
+from thop import profile
 
 class IC_NAS_Trainer:
     def __init__(self, args):
@@ -39,7 +41,67 @@ class IC_NAS_Trainer:
             f"  classifier: {classifier_params:,} parameters\n"
             f"  Total: {total_params:,} parameters"
         )
+    
 
+    def _compute_flops3(self, model):
+        """Compute forward pass FLOPs for the model in GFLOPs, dataset-agnostic."""
+        model.eval()
+        model = model.to('cpu')
+
+        # Determine input resolution
+        if hasattr(self, 'processor') and hasattr(self.processor, 'image_size'):
+            if isinstance(self.processor.image_size, dict):
+                height = self.processor.image_size.get('height', 224)
+                width = self.processor.image_size.get('width', 224)
+            else:
+                height = width = self.processor.image_size
+        elif hasattr(self, 'image_size'):
+            height = width = self.image_size
+        else:
+            height = width = 224
+        input_shape = (1, 3, height, width)
+        #self.logger.info(f"Computing forward FLOPs with input shape: {input_shape}")
+
+        # Compute FLOPs and parameters using thop
+        input_tensor = torch.randn(input_shape)
+        macs, params = profile(model, inputs=(input_tensor,), verbose=False)
+        flops = macs
+        gflops = flops / 1e9
+
+        #self.logger.info(f"Total params: {params:,}, Forward GFLOPs: {gflops:.2f}")
+
+        return params, gflops
+
+    def _compute_flops2(self, model):
+        """Compute forward pass FLOPs for the model in GFLOPs, dataset-agnostic."""
+        model.eval()
+        model = model.to('cpu')  # fvcore works on CPU
+
+        # Determine input resolution from processor or args
+        if hasattr(self, 'processor') and hasattr(self.processor, 'image_size'):
+            if isinstance(self.processor.image_size, dict):
+                height = self.processor.image_size.get('height', 224)
+                width = self.processor.image_size.get('width', 224)
+            else:
+                height = width = self.processor.image_size
+        elif hasattr(self, 'image_size'):
+            height = width = self.image_size
+        else:
+            height = width = 224  # Default for ViT-Base
+        input_shape = (1, 3, height, width)  # Batch=1 for FLOPs computation
+
+        # Compute total parameters
+        params = sum(p.numel() for p in model.parameters())
+
+        # Compute forward pass FLOPs using fvcore
+        input_tensor = torch.randn(input_shape)
+        flop_analyzer = FlopCountAnalysis(model, input_tensor)
+        flop_analyzer.uncalled_modules_warnings(False)  # Suppress warnings for uncalled modules
+        flops = flop_analyzer.total()
+        gflops = flops / 1e9  # Convert to GFLOPs
+
+
+        return params, gflops
     def _compute_flops(self, model):
         """Compute FLOPs for the model in GFLOPs, dataset-agnostic."""
         model.eval()
@@ -64,11 +126,11 @@ class IC_NAS_Trainer:
             input_res,
             as_strings=False,
             print_per_layer_stat=False,
-            verbose=False
+            verbose=True
         )
-        flops = macs * 2  # MACs to FLOPs (multiply by 2 for add and multiply)
+        flops = macs  # MACs to FLOPs (multiply by 2 for add and multiply)
         gflops = flops / 1e9  # Convert to GFLOPs
-        return gflops
+        return params,gflops
 
     def visualize_predictions(self, model, model_name, step):
         model.eval()
@@ -180,7 +242,8 @@ class IC_NAS_Trainer:
         metrics = self.training_step(submodel, data)
         end_train = timeit.default_timer()
         # Compute FLOPs
-        flops = self._compute_flops(submodel)
+        param2,flops = self._compute_flops3(submodel)
+        metrics['params2'] = param2
         metrics['flops'] = flops
 
         if do_test:
@@ -196,6 +259,7 @@ class IC_NAS_Trainer:
                 f'test time: {round(end_test - start_test, 4)}, '
                 f'metrics: {{train_loss: {metrics["train_loss"]:.4f}, '
                 f'params: {metrics["params"]:,}, '
+                f'params2: {metrics["params2"]:,}, '
                 f'flops: {metrics["flops"]:.2f} GFLOPs, '
                 f'test_accuracy: {metrics["test_accuracy"]:.4f}}}'
             )
@@ -204,6 +268,7 @@ class IC_NAS_Trainer:
                 f'\t{model_size} submodel train time: {round(end_train - start_train, 4)}, '
                 f'metrics: {{train_loss: {metrics["train_loss"]:.4f}, '
                 f'params: {metrics["params"]:,}, '
+                f'params2: {metrics["params2"]:,}, '
                 f'flops: {metrics["flops"]:.2f} GFLOPs}}'
             )
 

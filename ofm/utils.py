@@ -256,3 +256,29 @@ def structured_pruning(model,layers_to_prune,global_attn_indexes):
     # model.vision_encoder.config.num_hidden_layers = 12 - len(layers_to_prune)
 
     return model,layers_to_prune, global_attn_indexes
+
+def structured_pruning_vit(model, layers_to_prune):
+    """Prune the ViT model's transformer encoder layers.
+
+    Args:
+        model (nn.Module): ViT model (e.g., ViTForImageClassification).
+        layers_to_prune (list[int]): Indices of layers to remove.
+
+    Returns:
+        (nn.Module, list[int]): Pruned model and adjusted layer indices.
+    """
+    # Assert layer indices are valid
+    for l in layers_to_prune:
+        assert l in list(range(len(model.vit.encoder.layer))), f"Invalid layer index {l}, must be in 0-{len(model.vit.encoder.layer)-1}"
+    
+    # Sort layers_to_prune in descending order to avoid index shifting issues
+    layers_to_prune = sorted(layers_to_prune, reverse=True)
+    
+    # Remove layers
+    for l in layers_to_prune:
+        del model.vit.encoder.layer[l]
+
+    # Update number of hidden layers in config
+    model.config.num_hidden_layers = len(model.vit.encoder.layer)
+
+    return model, layers_to_prune

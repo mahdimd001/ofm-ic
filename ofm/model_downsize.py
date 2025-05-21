@@ -3,7 +3,7 @@ import copy
 from torch import nn
 import torch
 import time
-from .utils import calculate_params,structured_pruning
+from .utils import calculate_params,structured_pruning,structured_pruning_vit
 from peft import (
     PeftModel,
     PeftConfig,
@@ -126,7 +126,8 @@ def arc_config_sampler(elastic_config:dict, n_layer=12,smallest=False,largest=Fa
         arc_config[f"{int(layer)}"] = {
             "atten_out": atten_out,
             "inter_hidden": inter_hidden,
-            "residual_hidden": elastic_config[layer]["residual_hidden"],
+            #samani add [0] at end
+            "residual_hidden": elastic_config[layer]["residual_hidden"][0],
         }
     
     def sample_layer_indices(target_layer_idx, prob):
@@ -430,8 +431,12 @@ def vit_module_handler(model, arc_config):
 
     vit_layers = subnetwork.vit.encoder.layer
     new_config = ViTConfig.from_dict(model.config.to_dict())
-
+    remove_layer_idx = arc_config['remove_layer_idx']
     for i, (layer, key) in enumerate(zip(vit_layers, arc_config)):
+        # samani -> remove layer index
+        if i in remove_layer_idx:
+            # for layer been pruned, simply skip it here
+            continue
         arc = arc_config[key]
         # new_config.hidden_size = arc  # Set to the new output dimension
         new_config.attention_head_size = (
@@ -440,7 +445,7 @@ def vit_module_handler(model, arc_config):
         new_config.intermediate_size = arc["inter_hidden"]
 
         # samani -> add [0] at end
-        new_config.hidden_size = arc["residual_hidden"][0]
+        new_config.hidden_size = arc["residual_hidden"]
 
         new_attention_layer = ViTSelfAttention(config=new_config)
         new_out_layer = ViTSelfOutput(config=new_config)
@@ -470,6 +475,10 @@ def vit_module_handler(model, arc_config):
 
     subnetwork.config = new_config
     copy_weights_to_subnet(subnetwork, model)
+
+    subnetwork, _, = structured_pruning_vit(subnetwork, remove_layer_idx)
+
+
 
     total_params = calculate_params(subnetwork)
 

@@ -6,10 +6,12 @@ def arguments():
                         help="Model name or path")
     parser.add_argument("--processor_name", type=str, default="google/vit-base-patch16-224",
                         help="Processor name or path")
-    parser.add_argument("--dataset", type=str, default="cifar100",
-                        choices=["cifar10", "cifar100", "imagenet-1k"],
+    parser.add_argument("--dataset", type=str, default="cifar10",
+                        choices=["cifar10", "cifar100", "imagenet-1k", "slegroux/tiny-imagenet-200-clean", "zh-plus/tiny-imagenet"],
                         help="Dataset name")
-    parser.add_argument("--cache_dir", type=str, default="/lustre/hdd/LAS/jannesar-lab/msamani/.cache",
+    parser.add_argument("--cache_dir", type=str, default="/ptmp/LAS/msamani/.cache",
+                        help="Directory to cache datasets and models")
+    parser.add_argument("--log_dir", type=str, default="/work/LAS/jannesar-lab/msamani/SuperSAM/logs",
                         help="Directory to cache datasets and models")
     parser.add_argument("--batch_size", type=int, default=32,
                         help="Batch size for training and evaluation")
@@ -41,7 +43,7 @@ def arguments():
                         help="Sandwich configuration for training (l:largest, s:smallest, m:medium)")
     parser.add_argument("--huggingface_token", type=str, default="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",
                         help="Hugging Face token for ImageNet-1k dataset")
-    parser.add_argument("--subsample", type=bool, default=True,
+    parser.add_argument("--subsample", type=bool, default=False,
                         help="Subsample ImageNet-1k dataset")
     parser.add_argument("--tensorboard_visual", type=bool, default=False,
                         help="Enable TensorBoard visualization after saving checkpoints")
