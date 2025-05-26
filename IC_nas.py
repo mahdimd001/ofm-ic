@@ -3,7 +3,7 @@ import datetime
 import torch
 from datasets import load_dataset
 from transformers import AutoImageProcessor, AutoModelForImageClassification
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from ofm.modeling_ofm import OFM
 from IC_NAS_Trainer import IC_NAS_Trainer
 from IC_arguments import arguments
@@ -117,25 +117,67 @@ def main(args):
         cache_dir=args.cache_dir,
     )
 
-    # Define elastic config for NAS
-    regular_config = {
-        "atten_out_space": [768],
-        "inter_hidden_space": [3072],
-        "residual_hidden": [768],
-    }
-    elastic_config = {
-        "atten_out_space": [768],
-        # work on this
-        "inter_hidden_space": [2304, 1536, 1020, 768],
-        "residual_hidden": [768],
-    }
-    config = {
-        str(i): elastic_config if i in [1, 2, 3, 4, 5, 6,7,8, 9,10, 11] else regular_config for i in range(12)
-    }
-    config["layer_elastic"] = {
-        "elastic_layer_idx": [1, 2, 4,5,7,8, 9,10],
-        "remove_layer_prob": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-    }
+
+    # Reordering dataset
+    # Create a subset and apply the same transform as the main dataset
+    reordering_subset = dataset["train"].select(range(0, 1 * args.batch_size, 1)).with_transform(
+        functools.partial(transform, processor=processor)
+    )
+    reorder_dataloader = DataLoader(
+        reordering_subset, 
+        batch_size=args.batch_size,  # Match main batch size for consistency
+        shuffle=False, 
+        num_workers=4, 
+        pin_memory=True, 
+        persistent_workers=True, 
+        drop_last=False
+    )
+    args.reorder_dataloader = reorder_dataloader
+
+
+
+
+    if args.model_name == "google/vit-base-patch16-224":
+
+        # Define elastic config for NAS
+        regular_config = {
+            "atten_out_space": [768],
+            "inter_hidden_space": [3072],
+            "residual_hidden": [768],
+        }
+        elastic_config = {
+            "atten_out_space": [768],
+            # work on this
+            "inter_hidden_space": [2304, 1536, 1020, 768],
+            "residual_hidden": [768],
+        }
+        config = {
+            str(i): elastic_config if i in [1, 2, 3, 4, 5, 6,7,8, 9,10, 11] else regular_config for i in range(12)
+        }
+        config["layer_elastic"] = {
+            "elastic_layer_idx": [1, 2, 4,5,7,8, 9,10],
+            "remove_layer_prob": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+        }
+    elif args.model_name == "facebook/deit-tiny-patch16-224":
+        # Define elastic config for NAS
+        regular_config = {
+            "atten_out_space": [192],
+            "inter_hidden_space": [768],
+            "residual_hidden": [192],
+        }
+        elastic_config = {
+            "atten_out_space": [192],
+            # work on this
+            "inter_hidden_space": [192, 288, 384, 576, 768],
+            "residual_hidden": [192],
+        }
+        config = {
+            str(i): elastic_config if i in [1,2, 3,4,5,6,7,8,9,10,11] else regular_config for i in range(12)
+        }
+        config["layer_elastic"] = {
+            "elastic_layer_idx": [2, 3,6,7,8],
+            "remove_layer_prob": [0.5, 0.5, 0.5, 0.5, 0.5]
+        }
     print("loading ofm model...")
     # Wrap model with OFM for NAS
     ofm = OFM(model.to("cpu"), elastic_config=config)
@@ -157,7 +199,7 @@ def main(args):
     # Evaluate pre-trained model
     #start_test = timeit.default_timer()
     #accuracy, _, _ = trainer.eval(args.pretrained)
-    #nd_test = timeit.default_timer()
+    #end_test = timeit.default_timer()
     #args.logger.info(f'Pre-trained model size: {ofm.total_params} params \t Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
 
     # Evaluate supernet

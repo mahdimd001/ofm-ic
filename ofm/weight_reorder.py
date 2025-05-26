@@ -377,7 +377,7 @@ def vit_magnitude_reordering(vit_layers):
         layer.intermediate.dense.bias.data = b1_sorted
     return score_dist
 
-# not tested
+# work fine (samani)
 def vit_wanda_reordering(model, dataloader):
     """Compute Wanda-based importance scores for ViT MLP blocks."""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

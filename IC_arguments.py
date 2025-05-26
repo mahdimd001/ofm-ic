@@ -2,9 +2,17 @@ import argparse
 
 def arguments():
     parser = argparse.ArgumentParser(description="Image Classification with NAS")
-    parser.add_argument("--model_name", type=str, default="google/vit-base-patch16-224-in21k",
+    parser.add_argument("--model_name", type=str, default="google/vit-base-patch16-224",
+                        choices=["google/vit-base-patch16-224", "google/vit-base-patch16-224-in21k", "microsoft/swin-tiny-patch4-window7-224",
+                                 "microsoft/swin-base-patch4-window7-224", "microsoft/swin-large-patch4-window7-224",
+                                 "facebook/deit-tiny-patch16-224", "facebook/deit-small-patch16-224",
+                                 "facebook/deit-base-patch16-224", "facebook/deit-base-patch16-224-distilled",],
                         help="Model name or path")
     parser.add_argument("--processor_name", type=str, default="google/vit-base-patch16-224",
+                        choices=["google/vit-base-patch16-224", "google/vit-base-patch16-224-in21k", "microsoft/swin-tiny-patch4-window7-224",
+                                 "microsoft/swin-base-patch4-window7-224", "microsoft/swin-large-patch4-window7-224",
+                                 "facebook/deit-tiny-patch16-224", "facebook/deit-small-patch16-224",
+                                 "facebook/deit-base-patch16-224", "facebook/deit-base-patch16-224-distilled"],
                         help="Processor name or path")
     parser.add_argument("--dataset", type=str, default="cifar10",
                         choices=["cifar10", "cifar100", "imagenet-1k", "slegroux/tiny-imagenet-200-clean", "zh-plus/tiny-imagenet"],
@@ -35,7 +43,7 @@ def arguments():
     parser.add_argument("--reorder", type=str, default="per_epoch",
                         choices=["once", "per_epoch", "per_batch", "none"],
                         help="When to reorder MLP layers")
-    parser.add_argument("--reorder_method", type=str, default="magnitude",
+    parser.add_argument("--reorder_method", type=str, default="wanda",
                         choices=["magnitude", "wanda", "none"],
                         help="Method for MLP layer reordering")
     parser.add_argument("--sandwich", type=str, default="lsm",

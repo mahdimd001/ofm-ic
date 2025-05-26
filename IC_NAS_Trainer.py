@@ -230,7 +230,8 @@ class IC_NAS_Trainer:
         with torch.no_grad():
             for k, v in model.state_dict().items():
                 local_grad[k] = local_grad[k] - v.cpu()
-        self.supermodel.apply_grad(local_grad, model.config.arch.get('remove_layer_idx', []))
+        #self.supermodel.apply_grad(local_grad, model.config.arch.get('remove_layer_idx', []))
+        self.supermodel.apply_grad(local_grad,model.config.arch['remove_layer_idx'])
         return {"train_loss": loss.item(), "params": model.config.num_parameters}
 
     def single_step(self, submodel, data, model_size, do_test):
