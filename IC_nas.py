@@ -120,14 +120,14 @@ def main(args):
 
     # Reordering dataset
     # Create a subset and apply the same transform as the main dataset
-    reordering_subset = dataset["train"].select(range(0, 1 * args.batch_size, 1)).with_transform(
+    reordering_subset = dataset["train"].select(range(0, 2 * args.batch_size, 1)).with_transform(
         functools.partial(transform, processor=processor)
     )
     reorder_dataloader = DataLoader(
         reordering_subset, 
-        batch_size=args.batch_size,  # Match main batch size for consistency
+        batch_size=8,  # Match main batch size for consistency
         shuffle=False, 
-        num_workers=4, 
+        num_workers=2, 
         pin_memory=True, 
         persistent_workers=True, 
         drop_last=False
@@ -175,8 +175,8 @@ def main(args):
             str(i): elastic_config if i in [1,2, 3,4,5,6,7,8,9,10,11] else regular_config for i in range(12)
         }
         config["layer_elastic"] = {
-            "elastic_layer_idx": [2, 3,6,7,8],
-            "remove_layer_prob": [0.5, 0.5, 0.5, 0.5, 0.5]
+            "elastic_layer_idx": [],
+            "remove_layer_prob": []
         }
     print("loading ofm model...")
     # Wrap model with OFM for NAS
@@ -197,30 +197,30 @@ def main(args):
     trainer = IC_NAS_Trainer(args)
     print("stat evaluation...")
     # Evaluate pre-trained model
-    #start_test = timeit.default_timer()
-    #accuracy, _, _ = trainer.eval(args.pretrained)
-    #end_test = timeit.default_timer()
-    #args.logger.info(f'Pre-trained model size: {ofm.total_params} params \t Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
+    # start_test = timeit.default_timer()
+    # accuracy, _, _ = trainer.eval(args.pretrained)
+    # end_test = timeit.default_timer()
+    # args.logger.info(f'Pre-trained model size: {ofm.total_params} params \t Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
 
     # Evaluate supernet
-    #start_test = timeit.default_timer()
-    #accuracy, _, _ = trainer.eval(args.supermodel.model)
-    #end_test = timeit.default_timer()
-    #args.logger.info(f'Supernet size: {ofm.total_params} params \t Pre-NAS Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
+    # start_test = timeit.default_timer()
+    # accuracy, _, _ = trainer.eval(args.supermodel.model)
+    # end_test = timeit.default_timer()
+    # args.logger.info(f'Supernet size: {ofm.total_params} params \t Pre-NAS Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
 
     # Evaluate smallest submodel
-    #submodel, submodel.config.num_parameters, submodel.config.arch = args.supermodel.smallest_model()
-    #start_test = timeit.default_timer()
-    #accuracy, _, _ = trainer.eval(submodel)
-    #end_test = timeit.default_timer()
-    #args.logger.info(f'Smallest model size: {submodel.config.num_parameters} params \t Pre-NAS Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
+    # submodel, submodel.config.num_parameters, submodel.config.arch = args.supermodel.smallest_model()
+    # start_test = timeit.default_timer()
+    # accuracy, _, _ = trainer.eval(submodel)
+    # end_test = timeit.default_timer()
+    # args.logger.info(f'Smallest model size: {submodel.config.num_parameters} params \t Pre-NAS Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
 
     # Evaluate random submodel
-    #submodel, submodel.config.num_parameters, submodel.config.arch = args.supermodel.random_resource_aware_model()
-    #start_test = timeit.default_timer()
-    #accuracy, _, _ = trainer.eval(submodel)
-    #end_test = timeit.default_timer()
-    #args.logger.info(f'Medium model size: {submodel.config.num_parameters} params \t Pre-NAS Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
+    # submodel, submodel.config.num_parameters, submodel.config.arch = args.supermodel.random_resource_aware_model()
+    # start_test = timeit.default_timer()
+    # accuracy, _, _ = trainer.eval(submodel)
+    # end_test = timeit.default_timer()
+    # args.logger.info(f'Medium model size: {submodel.config.num_parameters} params \t Pre-NAS Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
 
     # Train with NAS
     args.logger.info('NAS Training starts')

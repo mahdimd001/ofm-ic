@@ -14,6 +14,7 @@ from torchvision.transforms import Resize
 from ptflops import get_model_complexity_info
 from fvcore.nn import FlopCountAnalysis
 from thop import profile
+from ofm.weight_reorder import compute_global_ffn_allocation
 
 class IC_NAS_Trainer:
     def __init__(self, args):
@@ -27,6 +28,7 @@ class IC_NAS_Trainer:
         self.tensorboard_dir = f'{self.log_dir}/tensorboard'
         self.writer = SummaryWriter(self.tensorboard_dir)
         self.logger.info(f"TensorBoard logs saved to: {self.tensorboard_dir}")
+        
     def _log_parameter_counts(self):
         """Log the number of parameters in each part of the model."""
         model = self.supermodel.model
@@ -41,6 +43,32 @@ class IC_NAS_Trainer:
             f"  classifier: {classifier_params:,} parameters\n"
             f"  Total: {total_params:,} parameters"
         )
+    
+    def count_intermediate_outputs(self,model):
+        """
+        Counts the number of weights (params) in the intermediate FFN layer of each ViT encoder block.
+        Assumes HuggingFace ViT model structure.
+        
+        Returns:
+            results (list): List of out_features for each intermediate layer.
+            total_weights (int): Total number of outputs in all intermediate layers.
+        """
+        model.eval()
+        model = model.to('cpu')
+        
+        results = []
+        total_weights = 0
+
+        for i, layer in enumerate(model.vit.encoder.layer):
+            intermediate = layer.intermediate.dense
+            out_features = intermediate.out_features
+
+            # Count weights: weights + bias
+            total_weights += out_features
+
+            results.append(out_features)
+
+        return results, total_weights
     
 
     def _compute_flops3(self, model):
@@ -230,7 +258,6 @@ class IC_NAS_Trainer:
         with torch.no_grad():
             for k, v in model.state_dict().items():
                 local_grad[k] = local_grad[k] - v.cpu()
-        #self.supermodel.apply_grad(local_grad, model.config.arch.get('remove_layer_idx', []))
         self.supermodel.apply_grad(local_grad,model.config.arch['remove_layer_idx'])
         return {"train_loss": loss.item(), "params": model.config.num_parameters}
 
@@ -310,8 +337,35 @@ class IC_NAS_Trainer:
                     submodels.append(('Smallest', submodel))
                 if 'm' in self.sandwich:
                     submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.random_resource_aware_model()
+                    param1 = submodel.config.arch
                     self.single_step(submodel, inputs, 'Medium', do_test)
                     submodels.append(('Medium', submodel))
+
+                    a1,a2 = self.count_intermediate_outputs(submodel)
+                    a3 = compute_global_ffn_allocation(self.supermodel.model, a2,'magnitude')
+                    
+
+                    #a4 = compute_global_ffn_allocation(self.supermodel.model, a2,'wanda',self.reorder_dataloader)
+                    # create a model based on the a4
+
+                    submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.smart_resource_aware_model(a3)
+                    param2 = submodel.config.arch
+                    self.single_step(submodel, inputs, 'Smart', do_test)
+
+
+                    def compare_inter_hidden(param1, param2):
+                        print(f"{'Layer':^8} | {'Param1':^10} | {'Param2':^10} | {'Difference':^10}")
+                        print("-" * 44)
+                        for i in range(12):  # layers 0 to 11
+                            layer = str(i)
+                            val1 = param1[layer]['inter_hidden']
+                            val2 = param2[layer]['inter_hidden']
+                            diff = val2 - val1
+                            diff_str = f"{diff:+}"
+                            print(f"{layer:^8} | {val1:^10} | {val2:^10} | {diff_str:^10}")
+
+                    if do_test:
+                        compare_inter_hidden(param1, param2)
 
 
                 if do_save:

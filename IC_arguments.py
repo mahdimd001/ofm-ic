@@ -2,26 +2,26 @@ import argparse
 
 def arguments():
     parser = argparse.ArgumentParser(description="Image Classification with NAS")
-    parser.add_argument("--model_name", type=str, default="google/vit-base-patch16-224",
+    parser.add_argument("--model_name", type=str, default="facebook/deit-tiny-patch16-224",
                         choices=["google/vit-base-patch16-224", "google/vit-base-patch16-224-in21k", "microsoft/swin-tiny-patch4-window7-224",
                                  "microsoft/swin-base-patch4-window7-224", "microsoft/swin-large-patch4-window7-224",
                                  "facebook/deit-tiny-patch16-224", "facebook/deit-small-patch16-224",
                                  "facebook/deit-base-patch16-224", "facebook/deit-base-patch16-224-distilled",],
                         help="Model name or path")
-    parser.add_argument("--processor_name", type=str, default="google/vit-base-patch16-224",
+    parser.add_argument("--processor_name", type=str, default="facebook/deit-tiny-patch16-224",
                         choices=["google/vit-base-patch16-224", "google/vit-base-patch16-224-in21k", "microsoft/swin-tiny-patch4-window7-224",
                                  "microsoft/swin-base-patch4-window7-224", "microsoft/swin-large-patch4-window7-224",
                                  "facebook/deit-tiny-patch16-224", "facebook/deit-small-patch16-224",
                                  "facebook/deit-base-patch16-224", "facebook/deit-base-patch16-224-distilled"],
                         help="Processor name or path")
-    parser.add_argument("--dataset", type=str, default="cifar10",
+    parser.add_argument("--dataset", type=str, default="imagenet-1k",
                         choices=["cifar10", "cifar100", "imagenet-1k", "slegroux/tiny-imagenet-200-clean", "zh-plus/tiny-imagenet"],
                         help="Dataset name")
     parser.add_argument("--cache_dir", type=str, default="/ptmp/LAS/msamani/.cache",
                         help="Directory to cache datasets and models")
     parser.add_argument("--log_dir", type=str, default="/work/LAS/jannesar-lab/msamani/SuperSAM/logs",
                         help="Directory to cache datasets and models")
-    parser.add_argument("--batch_size", type=int, default=32,
+    parser.add_argument("--batch_size", type=int, default=64,
                         help="Batch size for training and evaluation")
     parser.add_argument("--epochs", type=int, default=50,
                         help="Number of training epochs")
@@ -40,7 +40,7 @@ def arguments():
                         help="Save checkpoint every N steps")
     parser.add_argument("--no_verbose", action="store_true",
                         help="Disable verbose logging")
-    parser.add_argument("--reorder", type=str, default="per_epoch",
+    parser.add_argument("--reorder", type=str, default="per_batch",
                         choices=["once", "per_epoch", "per_batch", "none"],
                         help="When to reorder MLP layers")
     parser.add_argument("--reorder_method", type=str, default="wanda",
@@ -51,8 +51,10 @@ def arguments():
                         help="Sandwich configuration for training (l:largest, s:smallest, m:medium)")
     parser.add_argument("--huggingface_token", type=str, default="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",
                         help="Hugging Face token for ImageNet-1k dataset")
-    parser.add_argument("--subsample", type=bool, default=False,
+    parser.add_argument("--subsample", type=bool, default=True,
                         help="Subsample ImageNet-1k dataset")
     parser.add_argument("--tensorboard_visual", type=bool, default=False,
                         help="Enable TensorBoard visualization after saving checkpoints")
+    parser.add_argument("--attention_pruning", type=bool, default=False,
+                        help="Enable attention pruning for the model")
     return parser.parse_args()

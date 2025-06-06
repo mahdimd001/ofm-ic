@@ -93,6 +93,31 @@ class OFM:
         return subnetwork, total_params, arc_config
 
 
+
+
+        # samani change for vit support
+    def smart_resource_aware_model(self,layer_size):
+        """_summary_
+
+        Raises:
+            NotImplementedError: _description_
+
+        Returns:
+            _type_: _description_
+        """
+
+        if "vit" == self.model.config.model_type.lower():
+            arc_config = arc_config_sampler(
+                self.model.config.elastic_config,
+                n_layer=self.model.config.num_hidden_layers,
+            )
+        for i in layer_size:
+            arc_config[str(i)]['inter_hidden'] = layer_size[i]
+        subnetwork, total_params = self.resource_aware_model(arc_config)
+
+        return subnetwork, total_params, arc_config
+
+
     # samani change for vit support
     def smallest_model(self):
         """Return the smallest model in the elastic space

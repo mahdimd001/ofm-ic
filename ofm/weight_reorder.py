@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.init as init
 from functools import partial
 import copy
+from collections import defaultdict
 
 def mlp_masking(model, sparcity=.5, method='magnitude'):
     sam_vit_layers = model.vision_encoder.layers
@@ -483,6 +484,137 @@ def vit_weight_reorder(model, dataloader=None, method='magnitude'):
         score_dist = vit_magnitude_reordering(vit_layers)
     elif method == 'movement':
         score_dist = vit_movement_reordering(model, dataloader)
+    else:
+        raise ValueError(f"Unsupported reordering method: {method}")
+
+    return model, score_dist
+
+
+
+
+def compute_global_ffn_allocation(model, target_param,compute_score = 'magnitude',dataloader=None):
+    """
+    Use Mahdi's score formula to compute global FFN neuron allocation under a total parameter budget.
+    Reorders weights in-place per layer and returns how many FFN units to keep per layer.
+    """
+    all_units = [] 
+    if compute_score == 'magnitude':
+        for i, layer in enumerate(model.vit.encoder.layer):
+            W1 = layer.intermediate.dense.weight     # [out_dim, in_dim]
+            W2 = layer.output.dense.weight           # [in_dim, out_dim]
+            b1 = layer.intermediate.dense.bias
+
+            row_sums = W1.abs().sum(dim=1)           # [out_dim]
+            column_sums = W2.abs().sum(dim=0)        # [out_dim]
+            avg_sums = (row_sums + column_sums) / 2  # [out_dim]
+
+            avg_sums = avg_sums.cpu()
+            sorted_scores, sorted_indices = avg_sums.sort(descending=True)
+
+            # Reorder weights in-place (as you already do)
+            # W1_sorted = W1[sorted_indices, :]
+            # W2_sorted = W2[:, sorted_indices]
+            # b1_sorted = b1[sorted_indices]
+
+            # layer.intermediate.dense.weight.data = W1_sorted
+            # layer.output.dense.weight.data = W2_sorted
+            # layer.intermediate.dense.bias.data = b1_sorted
+            if i != 0: # Ensure the first layer keeps all units
+                # normalize scores to be in the range [0, 1]
+                #sorted_scores = (sorted_scores - sorted_scores.min()) / (sorted_scores.max() - sorted_scores.min()+1e-8)
+                for j, score in enumerate(sorted_scores):
+                    
+                    all_units.append((score.item(), i, j))
+        target_param = target_param -768 # Subtract the first layer's units (768) from the target_param
+        # Sort all units across all layers globally
+        all_units.sort(key=lambda x: x[0], reverse=True)
+
+        all_units = all_units[:target_param]  # Keep only the top N units based on target_param
+        keep_per_layer = defaultdict(int)
+        for tup in all_units:
+            second_value = tup[1]
+            keep_per_layer[second_value] += 1
+        keep_per_layer[0] = 768  # Ensure the first layer keeps all units
+        return keep_per_layer
+    elif compute_score == 'wanda':
+        # Implement Wanda-based global FFN allocation here
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model = model.to(device)
+        model.eval()
+        global wanda_sums
+        wanda_sums = {i: [[], []] for i in range(len(model.vit.encoder.layer))}
+        hooks_1, hooks_2 = [], []
+        for idx, layer in enumerate(model.vit.encoder.layer):
+            hook_1 = layer.intermediate.dense.register_forward_hook(partial(mlp_forward_hook, layer=idx, lin=1))
+            hook_2 = layer.output.dense.register_forward_hook(partial(mlp_forward_hook, layer=idx, lin=2))
+            hooks_1.append(hook_1)
+            hooks_2.append(hook_2)
+        with torch.no_grad():
+            for batch in dataloader:
+                inputs = batch["pixel_values"].to(device)
+                model(inputs)
+        for hook_1, hook_2 in zip(hooks_1, hooks_2):
+            hook_1.remove()
+            hook_2.remove()
+        score_dist = []
+        for idx, layer in enumerate(model.vit.encoder.layer):
+            avg_sums = ((sum(wanda_sums[idx][0]) / len(wanda_sums[idx][0])) + (sum(wanda_sums[idx][1]) / len(wanda_sums[idx][1]))) / 2
+            score_dist.append(avg_sums)
+            sorted_scores, sorted_indices = avg_sums.sort(descending=True)
+            # W1 = layer.intermediate.dense.weight
+            # W2 = layer.output.dense.weight
+            # b1 = layer.intermediate.dense.bias
+            # W1_sorted = W1[sorted_indices, :]
+            # W2_sorted = W2[:, sorted_indices]
+            # b1_sorted = b1[sorted_indices]
+            # layer.intermediate.dense.weight.data = W1_sorted
+            # layer.output.dense.weight.data = W2_sorted
+            # layer.intermediate.dense.bias.data = b1_sorted
+            # Save individual unit scores and costs
+            if idx != 0:  # Ensure the first layer keeps all units
+                for j, score in enumerate(sorted_scores):
+                    
+                    all_units.append((score.item(), idx, j))
+        all_units.sort(key=lambda x: x[0], reverse=True)
+        target_param = target_param - 768
+        all_units = all_units[:target_param]  # Keep only the top N units based on target_param
+        keep_per_layer = defaultdict(int)
+        for tup in all_units:
+            second_value = tup[1]
+            keep_per_layer[second_value] += 1
+        keep_per_layer[0] = 768
+        return keep_per_layer
+
+
+def global_vit_magnitude_reordering(vit_layers,NumberOfParams=4500):
+    """Compute magnitude-based importance scores for ViT MLP blocks in all layers and then ."""
+    return 0
+
+    
+
+def global_vit_wanda_reordering(model, dataloader,NumberOfParams=4500):
+    return 0
+
+
+def vit_global_weight_reorder(model, dataloader=None, method='magnitude',NumberOfParams=4500):
+    """
+    Reorder weights in ViT's MLP blocks using specified method.
+
+    Args:
+        model (nn.Module): ViT model (e.g., ViTForImageClassification).
+        dataloader (DataLoader, optional): DataLoader for data-dependent methods like Wanda.
+        method (str): Reordering method ('magnitude', 'wanda', 'movement'). Defaults to 'magnitude'.
+
+    Returns:
+        tuple: (model, score_dist)
+            - model: Reordered ViT model.
+            - score_dist: List of importance scores for each MLP block's intermediate dimension.
+    """
+    if method == 'wanda':
+        score_dist = global_vit_wanda_reordering(model, dataloader,NumberOfParams=4500)
+    elif method == 'magnitude':
+        vit_layers = model.vit.encoder.layer
+        score_dist = global_vit_magnitude_reordering(vit_layers,NumberOfParams=4500)
     else:
         raise ValueError(f"Unsupported reordering method: {method}")
 

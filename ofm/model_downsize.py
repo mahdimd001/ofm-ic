@@ -444,7 +444,6 @@ def vit_module_handler(model, arc_config):
         )  # Ensure it divides evenly
         new_config.intermediate_size = arc["inter_hidden"]
 
-        # samani -> add [0] at end
         new_config.hidden_size = arc["residual_hidden"]
 
         new_attention_layer = ViTSelfAttention(config=new_config)
