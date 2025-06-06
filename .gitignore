@@ -6,6 +6,8 @@ datasets/mitochondria/
 *$py.class
 run.sh
 
+data/
+
 # C extensions
 *.so
 
