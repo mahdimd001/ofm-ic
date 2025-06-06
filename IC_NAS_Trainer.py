@@ -342,30 +342,30 @@ class IC_NAS_Trainer:
                     submodels.append(('Medium', submodel))
 
                     a1,a2 = self.count_intermediate_outputs(submodel)
-                    a3 = compute_global_ffn_allocation(self.supermodel.model, a2,'magnitude')
+                    a3 = compute_global_ffn_allocation(self.supermodel.model, target_param=a2,compute_score='magnitude',removed_layers=submodel.config.arch['remove_layer_idx'])
                     
 
                     #a4 = compute_global_ffn_allocation(self.supermodel.model, a2,'wanda',self.reorder_dataloader)
                     # create a model based on the a4
 
-                    submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.smart_resource_aware_model(a3)
+                    submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.smart_resource_aware_model(a3,submodel.config.arch['remove_layer_idx'])
                     param2 = submodel.config.arch
                     self.single_step(submodel, inputs, 'Smart', do_test)
 
 
-                    def compare_inter_hidden(param1, param2):
-                        print(f"{'Layer':^8} | {'Param1':^10} | {'Param2':^10} | {'Difference':^10}")
-                        print("-" * 44)
-                        for i in range(12):  # layers 0 to 11
-                            layer = str(i)
-                            val1 = param1[layer]['inter_hidden']
-                            val2 = param2[layer]['inter_hidden']
-                            diff = val2 - val1
-                            diff_str = f"{diff:+}"
-                            print(f"{layer:^8} | {val1:^10} | {val2:^10} | {diff_str:^10}")
+                    # def compare_inter_hidden(param1, param2):
+                    #     print(f"{'Layer':^8} | {'Param1':^10} | {'Param2':^10} | {'Difference':^10}")
+                    #     print("-" * 44)
+                    #     for i in range(12):  # layers 0 to 11
+                    #         layer = str(i)
+                    #         val1 = param1[layer]['inter_hidden']
+                    #         val2 = param2[layer]['inter_hidden']
+                    #         diff = val2 - val1
+                    #         diff_str = f"{diff:+}"
+                    #         print(f"{layer:^8} | {val1:^10} | {val2:^10} | {diff_str:^10}")
 
-                    if do_test:
-                        compare_inter_hidden(param1, param2)
+                    # if do_test:
+                    #     compare_inter_hidden(param1, param2)
 
 
                 if do_save:

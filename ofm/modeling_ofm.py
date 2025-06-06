@@ -96,7 +96,7 @@ class OFM:
 
 
         # samani change for vit support
-    def smart_resource_aware_model(self,layer_size):
+    def smart_resource_aware_model(self,layer_size,removed_layers=None):
         """_summary_
 
         Raises:
@@ -113,6 +113,7 @@ class OFM:
             )
         for i in layer_size:
             arc_config[str(i)]['inter_hidden'] = layer_size[i]
+        arc_config['remove_layer_idx'] = removed_layers
         subnetwork, total_params = self.resource_aware_model(arc_config)
 
         return subnetwork, total_params, arc_config

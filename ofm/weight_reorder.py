@@ -492,7 +492,7 @@ def vit_weight_reorder(model, dataloader=None, method='magnitude'):
 
 
 
-def compute_global_ffn_allocation(model, target_param,compute_score = 'magnitude',dataloader=None):
+def compute_global_ffn_allocation(model, target_param,compute_score = 'magnitude',dataloader=None,removed_layers=None):
     """
     Use Mahdi's score formula to compute global FFN neuron allocation under a total parameter budget.
     Reorders weights in-place per layer and returns how many FFN units to keep per layer.
@@ -500,6 +500,8 @@ def compute_global_ffn_allocation(model, target_param,compute_score = 'magnitude
     all_units = [] 
     if compute_score == 'magnitude':
         for i, layer in enumerate(model.vit.encoder.layer):
+            if removed_layers is not None and i in removed_layers:
+                continue
             W1 = layer.intermediate.dense.weight     # [out_dim, in_dim]
             W2 = layer.output.dense.weight           # [in_dim, out_dim]
             b1 = layer.intermediate.dense.bias
@@ -558,6 +560,8 @@ def compute_global_ffn_allocation(model, target_param,compute_score = 'magnitude
             hook_2.remove()
         score_dist = []
         for idx, layer in enumerate(model.vit.encoder.layer):
+            if removed_layers is not None and idx in removed_layers:
+                continue
             avg_sums = ((sum(wanda_sums[idx][0]) / len(wanda_sums[idx][0])) + (sum(wanda_sums[idx][1]) / len(wanda_sums[idx][1]))) / 2
             score_dist.append(avg_sums)
             sorted_scores, sorted_indices = avg_sums.sort(descending=True)

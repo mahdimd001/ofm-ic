@@ -175,8 +175,8 @@ def main(args):
             str(i): elastic_config if i in [1,2, 3,4,5,6,7,8,9,10,11] else regular_config for i in range(12)
         }
         config["layer_elastic"] = {
-            "elastic_layer_idx": [],
-            "remove_layer_prob": []
+            "elastic_layer_idx": [2,3,6,7,8],
+            "remove_layer_prob": [.5, 0.5, 0.5, 0.5, 0.5]
         }
     print("loading ofm model...")
     # Wrap model with OFM for NAS
