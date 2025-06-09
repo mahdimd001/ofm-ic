@@ -261,6 +261,26 @@ class IC_NAS_Trainer:
         self.supermodel.apply_grad(local_grad,model.config.arch['remove_layer_idx'])
         return {"train_loss": loss.item(), "params": model.config.num_parameters}
 
+
+
+    def fine_tuning_step(self, model, inputs):
+        local_grad = {k: v.cpu() for k, v in model.state_dict().items()}
+        model = model.train()
+        model = nn.DataParallel(model).to(self.device)
+        self.optimizer.zero_grad()
+        outputs = model(pixel_values=inputs["pixel_values"].to(self.device))
+        loss = self.loss_func(outputs.logits, inputs["labels"].to(self.device))
+        loss.backward()
+        self.optimizer.step()
+        self.scheduler.step()
+        model = model.module
+        model = model.to('cpu')
+        with torch.no_grad():
+            for k, v in model.state_dict().items():
+                local_grad[k] = local_grad[k] - v.cpu()
+        self.supermodel.apply_grad(local_grad)
+        return {"train_loss": loss.item()}
+
     def single_step(self, submodel, data, model_size, do_test):
         trainable_params = get_trainable_parameters(submodel, self.trainable)
         self.optimizer, self.scheduler = get_optimizer_and_scheduler(
@@ -379,5 +399,72 @@ class IC_NAS_Trainer:
             end_epoch = timeit.default_timer()
             self.supermodel.save_ckpt(f'{self.log_dir}')
             self.logger.info(f'EPOCH {epoch}: ends {round(end_epoch - start_epoch, 4)} seconds. Model checkpoint saved.')
+        # Close TensorBoard writer
+        self.writer.close()
+
+
+    def fine_tune(self, epochs):
+        global_step = 0
+        best_accuracy = 0.0  # Track the best accuracy to save the best checkpoint
+
+        # Define evaluation interval (e.g., evaluate every 10% of the dataloader)
+        eval_interval = max(1, len(self.train_dataloader) // 10)  # Evaluate 10 times per epoch
+
+        # Initialize optimizer and scheduler for the supermodel
+        trainable_params = get_trainable_parameters(self.supermodel.model, self.trainable)
+        self.optimizer, self.scheduler = get_optimizer_and_scheduler(
+            trainable_params, self.lr, self.weight_decay, self.scheduler
+        )
+
+        for epoch in range(epochs):
+            self.logger.info(f'EPOCH {epoch}: starts')
+            start_epoch = timeit.default_timer()
+
+            # Set model to training mode
+            self.supermodel.model.train()
+            self.supermodel.model = self.supermodel.model.to(self.device)
+            
+
+            # Training loop
+            total_loss = 0.0
+            for idx, inputs in enumerate(tqdm(self.train_dataloader, disable=self.no_verbose)):
+                global_step += 1
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}  # Move inputs to device
+
+                # Perform a training step
+                metrics = self.fine_tuning_step(self.supermodel.model, inputs)
+                total_loss += metrics["train_loss"]
+
+                # Evaluate accuracy at specified intervals within the epoch
+                if (idx + 1) % eval_interval == 0 or idx == len(self.train_dataloader) - 1:
+                    self.supermodel.model.eval()
+                    accuracy, _, _ = self.eval(self.supermodel.model)
+                    self.supermodel.model.train()  # Switch back to training mode
+                    self.logger.info(f'\tStep {global_step} (Batch {idx + 1}/{len(self.train_dataloader)}): Accuracy: {accuracy*100:.2f}')
+
+                # Save checkpoint at specified intervals or at the end of the epoch
+                save_interval = len(self.train_dataloader) // self.save_interval if self.save_interval else 1
+                if (idx + 1) % save_interval == 0 or idx == len(self.train_dataloader) - 1:
+                    self.supermodel.save_ckpt(f'{self.log_dir}')
+                    self.logger.info(f'\tStep {global_step}: Model checkpoint saved.')
+
+            # Compute average loss for the epoch
+            avg_loss = total_loss / len(self.train_dataloader)
+            self.logger.info(f'\tEpoch {epoch} Average Loss: {avg_loss:.2f}')
+
+            # Final evaluation at the end of the epoch
+            self.supermodel.model.eval()
+            accuracy, _, _ = self.eval(self.supermodel.model)
+            self.logger.info(f'\tEpoch {epoch} Final Accuracy: {accuracy*100:.2f}')
+
+            # Save the best model based on accuracy
+            if accuracy > best_accuracy:
+                best_accuracy = accuracy
+                self.supermodel.save_ckpt(f'{self.log_dir}best/')
+                self.logger.info(f'\tNew best accuracy: {best_accuracy:.2f}, saved checkpoint to {self.log_dir}best/')
+
+            end_epoch = timeit.default_timer()
+            self.logger.info(f'EPOCH {epoch}: ends {round(end_epoch - start_epoch, 4)} seconds.')
+
         # Close TensorBoard writer
         self.writer.close()

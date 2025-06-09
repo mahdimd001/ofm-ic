@@ -55,8 +55,8 @@ def main(args):
             dataset["validation"] = train_val["test"]
         if args.subsample == True:
             args.logger.info("Subsampling ImageNet-1k: 5000 training, 1000 validation images")
-            train_subset = dataset["train"].train_test_split(train_size=5000, seed=123, stratify_by_column="label")["train"]
-            val_subset = dataset["validation"].train_test_split(train_size=1000, seed=123, stratify_by_column="label")["train"]
+            train_subset = dataset["train"].train_test_split(train_size=100000, seed=123, stratify_by_column="label")["train"]
+            val_subset = dataset["validation"].train_test_split(train_size=20000, seed=123, stratify_by_column="label")["train"]
             dataset["train"] = train_subset
             dataset["validation"] = val_subset
         dataset['train'] = dataset['train'].rename_column("image", "img")
@@ -178,6 +178,26 @@ def main(args):
             "elastic_layer_idx": [2,3,6,7,8],
             "remove_layer_prob": [.5, 0.5, 0.5, 0.5, 0.5]
         }
+    elif args.model_name == "facebook/deit-small-patch16-224":
+        # Define elastic config for NAS
+        regular_config = {
+            "atten_out_space": [384],
+            "inter_hidden_space": [1536],
+            "residual_hidden": [384],
+        }
+        elastic_config = {
+            "atten_out_space": [384],
+            # work on this
+            "inter_hidden_space": [384, 576, 768, 1024, 1536],
+            "residual_hidden": [384],
+        }
+        config = {
+            str(i): elastic_config if i in [1,2, 3,4,5,6,7,8,9,10,11] else regular_config for i in range(12)
+        }
+        config["layer_elastic"] = {
+            "elastic_layer_idx": [2,3,6,7,8],
+            "remove_layer_prob": [.5, 0.5, 0.5, 0.5, 0.5]
+        }
     print("loading ofm model...")
     # Wrap model with OFM for NAS
     ofm = OFM(model.to("cpu"), elastic_config=config)
@@ -197,11 +217,21 @@ def main(args):
     trainer = IC_NAS_Trainer(args)
     print("stat evaluation...")
     # Evaluate pre-trained model
-    # start_test = timeit.default_timer()
-    # accuracy, _, _ = trainer.eval(args.pretrained)
-    # end_test = timeit.default_timer()
-    # args.logger.info(f'Pre-trained model size: {ofm.total_params} params \t Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
+    start_test = timeit.default_timer()
+    accuracy, _, _ = trainer.eval(args.pretrained)
+    end_test = timeit.default_timer()
+    args.logger.info(f'Pre-trained model size: {ofm.total_params} params \t Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
 
+    
+    # for i in range(args.finetune_epoches):
+    #     args.logger.info(f'Fine-tuning epoch {i+1}/{args.finetune_epoches}')
+    #     start_finetune = timeit.default_timer()
+    #     trainer.fine_tune(args.finetune_epoches)
+    #     end_finetune = timeit.default_timer()
+    #     args.logger.info(f'Fine-tuning epoch {i+1} completed in {round(end_finetune - start_finetune, 4)} seconds, Accuracy: {accuracy*100:.2f}%')
+    
+    
+    
     # Evaluate supernet
     # start_test = timeit.default_timer()
     # accuracy, _, _ = trainer.eval(args.supermodel.model)

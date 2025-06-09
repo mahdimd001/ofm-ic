@@ -547,6 +547,7 @@ def compute_global_ffn_allocation(model, target_param,compute_score = 'magnitude
         wanda_sums = {i: [[], []] for i in range(len(model.vit.encoder.layer))}
         hooks_1, hooks_2 = [], []
         for idx, layer in enumerate(model.vit.encoder.layer):
+            
             hook_1 = layer.intermediate.dense.register_forward_hook(partial(mlp_forward_hook, layer=idx, lin=1))
             hook_2 = layer.output.dense.register_forward_hook(partial(mlp_forward_hook, layer=idx, lin=2))
             hooks_1.append(hook_1)
