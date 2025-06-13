@@ -21,6 +21,7 @@ import logging
 from huggingface_hub import login
 import evaluate
 import torch.nn.functional as F
+from operator import itemgetter
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -310,6 +311,123 @@ def get_head_scores_Paper(model, data_loader, device, num_batches=10):
     return importance_scores
 
 
+
+
+
+def get_ra_scores(model, data_loader, device, num_batches=10, normalize_grads=True):
+    """
+    Compute Reversed Attention (RA) scores for each attention head in a ViT model,
+    based on Katz et al. (2024): https://github.com/shacharKZ/Reversed-Attention.
+    
+    Args:
+        model: Pre-trained ViT model (e.g., AutoModelForImageClassification).
+        data_loader: DataLoader with input data.
+        device: Device to run computation on (e.g., 'cuda').
+        num_batches: Number of batches to process for averaging (default: 10).
+        normalize_grads: Whether to normalize gradients by their standard deviation (default: True).
+    
+    Returns:
+        List of tensors, one per layer, each of shape (num_heads,), containing RA scores.
+    """
+    model = model.to(device)
+    model.train()  # Enable gradients
+
+    num_layers = len(model.vit.encoder.layer)
+    num_heads = model.config.num_attention_heads
+    # Accumulators for RA scores per layer
+    ra_accumulator = [torch.zeros(num_heads, device=device) for _ in range(num_layers)]
+    total_samples = 0
+
+    # Get classifier weight matrix for projection
+    classifier_weight = model.classifier.weight  # Shape: (num_classes, hidden_size)
+    classifier_weight = classifier_weight.to(device)
+
+    # Hook function to compute RA score when gradient is available
+    def hook_fn(grad, context_layer, layer_idx):
+        # grad and context_layer: (batch_size, num_heads, seq_len, head_dim)
+        batch_size, num_heads, seq_len, head_dim = grad.shape
+        # Ensure grad is contiguous and reshape
+        grad = grad.contiguous().reshape(batch_size, num_heads, seq_len * head_dim)  # (batch_size, num_heads, seq_len * head_dim)
+
+        # Optional normalization by standard deviation
+        if normalize_grads:
+            grad_std = grad.std(dim=2, keepdim=True) + 1e-6  # Avoid division by zero
+            grad = grad / grad_std  # Normalize
+
+        # Aggregate grad over seq_len * head_dim to match hidden_size
+        grad = grad.sum(dim=2)  # (batch_size, num_heads)
+
+        # Project gradient to output space: W_cls^T * grad
+        projected_grad = torch.matmul(grad, classifier_weight.t())  # (batch_size, num_heads, num_classes)
+
+        # Compute L2 norm over num_classes dimension, sum over batch
+        ra_score = torch.norm(projected_grad, p=2, dim=2).sum(dim=0)  # (num_heads,)
+        ra_accumulator[layer_idx] += ra_score
+
+    # Temporarily modify forward functions to register hooks
+    original_forwards = [layer.attention.attention.forward for layer in model.vit.encoder.layer]
+
+    def new_forward(self, hidden_states, head_mask=None, output_attentions=False):
+        # Standard ViT forward pass up to context_layer
+        mixed_query_layer = self.query(hidden_states)
+        key_layer = self.transpose_for_scores(self.key(hidden_states))
+        value_layer = self.transpose_for_scores(self.value(hidden_states))
+        query_layer = self.transpose_for_scores(mixed_query_layer)
+
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = attention_scores / (self.attention_head_size ** 0.5)
+        attention_probs = F.softmax(attention_scores, dim=-1)
+        # Apply dropout
+        attention_probs = F.dropout(
+            attention_probs, p=self.config.attention_probs_dropout_prob, training=self.training
+        )
+
+        if head_mask is not None:
+            attention_probs = attention_probs * head_mask
+
+        context_layer = torch.matmul(attention_probs, value_layer)  # (batch_size, num_heads, seq_len, head_dim)
+        # Detach and register hook
+        context_layer_detached = context_layer.detach()
+        context_layer.register_hook(lambda grad: hook_fn(grad, context_layer_detached, self.layer_idx))
+
+        # Continue original forward pass
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(new_context_shape)
+
+        outputs = (context_layer,)
+        if output_attentions:
+            outputs += (attention_probs,)
+        return outputs
+
+    # Apply new forward function to each attention module
+    for layer_idx, layer in enumerate(model.vit.encoder.layer):
+        layer.attention.attention.forward = new_forward.__get__(layer.attention.attention)
+        layer.attention.attention.layer_idx = layer_idx
+
+    # Process batches
+    for i, batch in enumerate(tqdm(data_loader, desc="Computing RA scores", total=num_batches)):
+        if i >= num_batches:
+            break
+        images = batch["pixel_values"].to(device)
+        labels = batch["labels"].to(device)
+
+        outputs = model(images)
+        loss = nn.CrossEntropyLoss()(outputs.logits, labels)
+        loss.backward()
+
+        total_samples += images.size(0)
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    # Restore original forward functions
+    for layer, original_forward in zip(model.vit.encoder.layer, original_forwards):
+        layer.attention.attention.forward = original_forward
+
+    # Compute average RA scores
+    ra_scores = [accum / total_samples for accum in ra_accumulator]
+
+    return ra_scores
+
 # Function to create a model with a specific head removed
 def create_pruned_model(original_model, layer_idx_to_prune, head_idx_to_prune):
     # Create a deep copy of the original model
@@ -423,6 +541,176 @@ def evaluate_model(model, test_loader=None):
     accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
     return accuracy["accuracy"]
 
+def experiment_1(model,test_dataloader, reorder_dataloader, cache_dir="./cache", max_heads_to_prune=36, accuracy_threshold=0.5):
+    """
+    Experiment 1: Compute Wanda scores once, then iteratively prune the lowest-scoring head
+    from the previously pruned model and evaluate accuracy.
+    
+    Args:
+        model: Pre-trained ViT model.
+        test_dataloader: DataLoader for evaluation.
+        device: Device to run computation on.
+        cache_dir: Directory for caching activation norms.
+        max_samples: Number of samples for computing Wanda scores.
+        max_heads_to_prune: Maximum number of heads to prune.
+        accuracy_threshold: Stop if accuracy drops below this fraction of original accuracy.
+    """
+    logging.info("Starting Experiment 1: Iterative pruning without score recomputation")
+    
+    # Evaluate original model
+    original_accuracy = evaluate_model(model, test_dataloader)
+    original_params, original_flops = compute_flops(model)
+    logging.info(f"Original Model - Accuracy: {original_accuracy:.4f}, Params: {original_params/1e6:.2f}M, FLOPs: {original_flops:.2f}G")
+    
+    # Compute Wanda scores once
+    logging.info("Computing initial Paper scores...")
+    scores = get_head_scores_Paper(model, reorder_dataloader, device, num_batches=10)
+    
+    # Flatten scores with (layer_idx, head_idx, score) tuples
+    head_scores = [
+        (layer_idx, head_idx, score)
+        for layer_idx, layer_scores in enumerate(scores)
+        for head_idx, score in enumerate(layer_scores)
+    ]
+    # Sort by score (ascending) to prune lowest-scoring heads first
+    head_scores.sort(key=itemgetter(2))
+    
+    current_model = copy.deepcopy(model)
+    num_pruned = 0
+    results = []
+    
+    for layer_idx, head_idx, score in head_scores:
+        if num_pruned >= max_heads_to_prune:
+            logging.info(f"Stopping Experiment 1: Reached maximum heads to prune ({max_heads_to_prune})")
+            break
+            
+        logging.info(f"Pruning Layer {layer_idx}, Head {head_idx} (Score: {score:.4f})")
+        try:
+            # Prune the head from the current model
+            pruned_model = create_pruned_model(current_model, layer_idx, head_idx)
+            # Evaluate the pruned model
+            accuracy = evaluate_model(pruned_model, test_dataloader)
+            params, flops = compute_flops(pruned_model)
+            
+            logging.info(f"Pruned Layer {layer_idx}, Head {head_idx}, Accuracy: {accuracy:.4f}, "
+                        f"Params: {params/1e6:.2f}M, FLOPs: {flops:.2f}G")
+            
+            results.append({
+                'layer_idx': layer_idx,
+                'head_idx': head_idx,
+                'score': score,
+                'accuracy': accuracy,
+                'params': params,
+                'flops': flops
+            })
+            
+            # Check accuracy threshold
+            if accuracy <  accuracy_threshold:
+                logging.info(f"Stopping Experiment 1: Accuracy {accuracy:.4f} below threshold "
+                            f"{ accuracy_threshold:.4f}")
+                break
+                
+            # Update current model
+            current_model = copy.deepcopy(pruned_model)
+            num_pruned += 1
+            
+            # Clean up
+            del pruned_model
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+        except Exception as e:
+            logging.error(f"Error pruning Layer {layer_idx}, Head {head_idx}: {str(e)}")
+            continue
+    
+    logging.info("Experiment 1 completed")
+    return results
+
+
+def experiment_2(model, test_dataloader,reorder_dataloader, cache_dir="./cache", max_heads_to_prune=72, accuracy_threshold=0.5):
+    """
+    Experiment 2: Compute Wanda scores, prune the lowest-scoring head, evaluate accuracy,
+    then recompute scores on the pruned model and repeat.
+    
+    Args:
+        model: Pre-trained ViT model.
+        test_dataloader: DataLoader for evaluation.
+        device: Device to run computation on.
+        cache_dir: Directory for caching activation norms.
+        max_samples: Number of samples for computing Wanda scores.
+        max_heads_to_prune: Maximum number of heads to prune.
+        accuracy_threshold: Stop if accuracy drops below this fraction of original accuracy.
+    """
+    logging.info("Starting Experiment 2: Iterative pruning with score recomputation")
+    
+    # Evaluate original model
+    original_accuracy = evaluate_model(model, test_dataloader)
+    original_params, original_flops = compute_flops(model)
+    logging.info(f"Original Model - Accuracy: {original_accuracy:.4f}, Params: {original_params/1e6:.2f}M, FLOPs: {original_flops:.2f}G")
+    
+    current_model = copy.deepcopy(model)
+    num_pruned = 0
+    results = []
+    
+    while num_pruned < max_heads_to_prune:
+        # Compute Wanda scores on the current model
+        logging.info(f"Computing Paper scores for iteration {num_pruned + 1}")
+        scores = get_head_scores_Paper(current_model, reorder_dataloader, device, num_batches=10)
+        
+        # Flatten scores with (layer_idx, head_idx, score) tuples
+        head_scores = [
+            (layer_idx, head_idx, score)
+            for layer_idx, layer_scores in enumerate(scores)
+            for head_idx, score in enumerate(layer_scores)
+            if len(current_model.vit.encoder.layer[layer_idx].attention.attention.query.weight) // 
+               (current_model.config.hidden_size // current_model.config.num_attention_heads) > head_idx
+        ]
+        # Sort by score (ascending) to find the lowest-scoring head
+        if not head_scores:
+            logging.info("No more heads to prune")
+            break
+        head_scores.sort(key=itemgetter(2))
+        layer_idx, head_idx, score = head_scores[0]
+        
+        logging.info(f"Pruning Layer {layer_idx}, Head {head_idx} (Score: {score:.4f})")
+        try:
+            # Prune the head from the current model
+            pruned_model = create_pruned_model(current_model, layer_idx, head_idx)
+            # Evaluate the pruned model
+            accuracy = evaluate_model(pruned_model, test_dataloader)
+            params, flops = compute_flops(pruned_model)
+            
+            logging.info(f"Pruned Layer {layer_idx}, Head {head_idx}, Accuracy: {accuracy:.4f}, "
+                        f"Params: {params/1e6:.2f}M, FLOPs: {flops:.2f}G")
+            
+            results.append({
+                'layer_idx': layer_idx,
+                'head_idx': head_idx,
+                'score': score,
+                'accuracy': accuracy,
+                'params': params / 1e6,
+                'flops': flops
+            })
+            
+            # Check accuracy threshold
+            if accuracy < original_accuracy * accuracy_threshold:
+                logging.info(f"Stopping Experiment 2: Accuracy {accuracy:.4f} below threshold "
+                            f"{original_accuracy * accuracy_threshold:.4f}")
+                break
+                
+            # Update current model
+            current_model = copy.deepcopy(pruned_model)
+            num_pruned += 1
+            
+            # Clean up
+            del pruned_model
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+        except Exception as e:
+            logging.error(f"Error pruning Layer {layer_idx}, Head {head_idx}: {str(e)}")
+            break
+    
+    logging.info("Experiment 2 completed")
+    return results
 
 def main(args):
 
@@ -547,6 +835,8 @@ def main(args):
         label2id={c: str(i) for i, c in enumerate(labels)},
         ignore_mismatched_sizes=True,
         cache_dir=args.cache_dir,
+        trust_remote_code=True,
+        use_safetensors=True
     )
 
 
@@ -678,18 +968,18 @@ def main(args):
     
 
     # Evaluate original model
-    original_accuracy = evaluate_model(model, test_loader=test_dataloader)
-    original_params = calculate_params(model)
-    original_flops = compute_flops(model)
-    logging.info(
-    f"FineTuned Model - Accuracy: {original_accuracy:.2f}%, "
-    f"Params: {original_params:.2f}M, FLOPs: {original_flops[1]:.2f}G")
+    # original_accuracy = evaluate_model(model, test_loader=test_dataloader)
+    # original_params = calculate_params(model)
+    # original_flops = compute_flops(model)
+    # logging.info(
+    # f"FineTuned Model - Accuracy: {original_accuracy:.2f}%, "
+    # f"Params: {original_params:.2f}M, FLOPs: {original_flops[1]:.2f}G")
     # Calculate scores
-    logging.info("Calculating head scores...")
-    scores1 = get_head_scores_QKV(model)
-    scores2 = get_head_scores_Output(model)
-    scores3 = get_head_scores_OutputActivation(model, reorder_dataloader, device, max_samples=1000)
-    scores4 = get_head_scores_Paper(model, reorder_dataloader, device, num_batches=10)
+    # logging.info("Calculating head scores...")
+    # scores1 = get_head_scores_QKV(model)
+    # scores2 = get_head_scores_Output(model)
+    # scores3 = get_head_scores_OutputActivation(model, reorder_dataloader, device, max_samples=1000)
+    # scores4 = get_head_scores_Paper(model, reorder_dataloader, device, num_batches=10)
     # implement adaptive pruning based on scores4
     # remove the heads with the lowest score
     # then recompute scorees4
@@ -698,29 +988,46 @@ def main(args):
 
 
     
-    # for layer_idx and head_idx in range 0-12
-    logging.info("Testing pruned models...")
-    for layer_idx in range(12):
-        for head_idx  in range(12):
-            if layer_idx >= len(scores4) or head_idx >= len(scores4[layer_idx]):
-                continue
-            print(f"\nTesting pruned model: Layer {layer_idx}, Head {head_idx}")
-            try:
-                pruned_model = create_pruned_model(model, layer_idx, head_idx)
-                accuracy = evaluate_model(pruned_model, test_loader=test_dataloader)
-                params = calculate_params(pruned_model)
-                flops = compute_flops(pruned_model)
-                logging.info(f"Layer {layer_idx}, Head {head_idx}, Score1: {scores1[layer_idx][head_idx]:.4f},Score2: {scores2[layer_idx][head_idx]:.4f},Score3: {scores3[layer_idx][head_idx]:.4f}, Score4: {scores4[layer_idx][head_idx]:.4f}, "f"Accuracy: {accuracy:.2f}%, Params: {params:.2f}M, FLOPs: {flops[1]:.2f}G")
+    # # for layer_idx and head_idx in range 0-12
+    # logging.info("Testing pruned models...")
+    # for layer_idx in range(12):
+    #     for head_idx  in range(12):
+    #         if layer_idx >= len(scores4) or head_idx >= len(scores4[layer_idx]):
+    #             continue
+    #         print(f"\nTesting pruned model: Layer {layer_idx}, Head {head_idx}")
+    #         try:
+    #             pruned_model = create_pruned_model(model, layer_idx, head_idx)
+    #             accuracy = evaluate_model(pruned_model, test_loader=test_dataloader)
+    #             params = calculate_params(pruned_model)
+    #             flops = compute_flops(pruned_model)
+    #             logging.info(f"Layer {layer_idx}, Head {head_idx}, Score1: {scores1[layer_idx][head_idx]:.4f},Score2: {scores2[layer_idx][head_idx]:.4f},Score3: {scores3[layer_idx][head_idx]:.4f}, Score4: {scores4[layer_idx][head_idx]:.4f}, "f"Accuracy: {accuracy:.2f}%, Params: {params:.2f}M, FLOPs: {flops[1]:.2f}G")
                 
                 
-                # Clean up
-                del pruned_model
-                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    #             # Clean up
+    #             del pruned_model
+    #             torch.cuda.empty_cache() if torch.cuda.is_available() else None
                 
-            except Exception as e:
-                print(f"Error with Layer {layer_idx}, Head {head_idx}: {str(e)}")
+    #         except Exception as e:
+    #             print(f"Error with Layer {layer_idx}, Head {head_idx}: {str(e)}")
 
-    
+
+    score2 = get_ra_scores(model, reorder_dataloader, device, num_batches=2)
+    print("RA scores:", score2)
+
+
+
+    # try:
+    #     experiment_1(model,test_dataloader, reorder_dataloader, cache_dir="./cache", max_heads_to_prune=72, accuracy_threshold=0.5)
+    # except Exception as e:
+    #     logging.error(f"Experiment 1 failed: {str(e)}")
+    # try:
+    #     experiment_2(model,test_dataloader, reorder_dataloader, cache_dir="./cache", max_heads_to_prune=72, accuracy_threshold=0.5)
+    # except Exception as e:
+    #     logging.error(f"Experiment 2 failed: {str(e)}")
+
+
+
+        
 
 
 

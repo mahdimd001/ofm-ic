@@ -6,6 +6,7 @@
       "**/data": true
     },
     "search.exclude": {
+      "**/logs": true,
       "**/.git": true,
       "**/__pycache__": true,
       "**/.venv": true,

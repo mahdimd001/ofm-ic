@@ -25,7 +25,7 @@ def arguments():
                         help="Batch size for training and evaluation")
     parser.add_argument("--epochs", type=int, default=50,
                         help="Number of training epochs")
-    parser.add_argument("--lr", type=float, default=5e-5,
+    parser.add_argument("--lr", type=float, default=3e-6,
                         help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=0.0,
                         help="Weight decay")
@@ -51,12 +51,14 @@ def arguments():
                         help="Sandwich configuration for training (l:largest, s:smallest, m:medium)")
     parser.add_argument("--huggingface_token", type=str, default="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",
                         help="Hugging Face token for ImageNet-1k dataset")
-    parser.add_argument("--subsample", type=bool, default=False,
+    parser.add_argument("--subsample", type=bool, default=True,
                         help="Subsample ImageNet-1k dataset")
     parser.add_argument("--tensorboard_visual", type=bool, default=False,
                         help="Enable TensorBoard visualization after saving checkpoints")
     parser.add_argument("--finetune_epoches", type=int, default=0,
                         help="Number of epochs for fine-tuning the model")
+    parser.add_argument("--enable_KD", type=bool, default=True,
+                        help="Enable knowledge distillation during training")
     parser.add_argument("--attention_pruning", type=bool, default=True,
                         help="Enable attention pruning for the model")
     return parser.parse_args()

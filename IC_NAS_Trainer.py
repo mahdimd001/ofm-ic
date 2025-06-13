@@ -243,13 +243,33 @@ class IC_NAS_Trainer:
         accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
         return accuracy["accuracy"], None, map
 
-    def training_step(self, model, inputs):
+    def training_step(self, model, inputs, teacher_logits=None, model_size=None):
         local_grad = {k: v.cpu() for k, v in model.state_dict().items()}
         model = model.train()
         model = nn.DataParallel(model).to(self.device)
         self.optimizer.zero_grad()
         outputs = model(pixel_values=inputs["pixel_values"].to(self.device))
+        logits = outputs.logits.detach().cpu()
         loss = self.loss_func(outputs.logits, inputs["labels"].to(self.device))
+
+        # if self.enable_KD and teacher_logits is not None:
+        #     kd_loss = nn.MSELoss()(outputs.logits, teacher_logits.to(self.device))
+        #     loss = loss + kd_loss
+
+        #  Distillation Loss (Only for Small/Medium)
+        if teacher_logits is not None:
+            T = 2.0  # temperature
+            student_probs = nn.functional.log_softmax(outputs.logits / T, dim=-1)
+            teacher_probs = nn.functional.softmax(teacher_logits / T, dim=-1)
+            teacher_probs = teacher_probs.to(self.device)
+            student_probs = student_probs.to(self.device)
+            distill_loss = nn.KLDivLoss(reduction='batchmean')(student_probs, teacher_probs) * (T ** 2)
+            
+            alpha = 0.5  # weighting between real and distill loss
+            loss = alpha * loss + (1 - alpha) * distill_loss
+
+
+
         loss.backward()
         self.optimizer.step()
         self.scheduler.step()
@@ -259,7 +279,7 @@ class IC_NAS_Trainer:
             for k, v in model.state_dict().items():
                 local_grad[k] = local_grad[k] - v.cpu()
         self.supermodel.apply_grad(local_grad,model.config.arch['remove_layer_idx'])
-        return {"train_loss": loss.item(), "params": model.config.num_parameters}
+        return {"train_loss": loss.item(), "params": model.config.num_parameters},logits
 
 
 
@@ -281,13 +301,13 @@ class IC_NAS_Trainer:
         self.supermodel.apply_grad(local_grad)
         return {"train_loss": loss.item()}
 
-    def single_step(self, submodel, data, model_size, do_test):
+    def single_step(self, submodel, data, model_size, do_test,teacher_logits=None):
         trainable_params = get_trainable_parameters(submodel, self.trainable)
         self.optimizer, self.scheduler = get_optimizer_and_scheduler(
             trainable_params, self.lr, self.weight_decay, self.scheduler
         )
         start_train = timeit.default_timer()
-        metrics = self.training_step(submodel, data)
+        metrics,logits = self.training_step(submodel, data, teacher_logits,model_size)
         end_train = timeit.default_timer()
         # Compute FLOPs
         param2,flops = self._compute_flops3(submodel)
@@ -319,6 +339,7 @@ class IC_NAS_Trainer:
                 f'params2: {metrics["params2"]:,}, '
                 f'flops: {metrics["flops"]:.2f} GFLOPs}}'
             )
+        return logits
 
     def train(self):
         global_step = 0
@@ -343,34 +364,43 @@ class IC_NAS_Trainer:
 
                 do_test = do_test or do_save
                 submodels = []
+                teacher_logits = None
                 if 'l' in self.sandwich:
                     submodel, submodel.config.num_parameters, submodel.config.arch = (
                         copy.deepcopy(self.supermodel.model),
                         self.supermodel.total_params,
                         {'remove_layer_idx': []},
                     )
-                    self.single_step(submodel, inputs, 'Largest', do_test)
+                    teacher_logits = self.single_step(submodel, inputs, 'Largest', do_test)
+                    if not self.enable_KD:
+                        teacher_logits = None
+
                     submodels.append(('Largest', submodel))
                 if 's' in self.sandwich:
                     submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.smallest_model()
-                    self.single_step(submodel, inputs, 'Smallest', do_test)
+                    self.single_step(submodel, inputs, 'Smallest', do_test, teacher_logits)
                     submodels.append(('Smallest', submodel))
                 if 'm' in self.sandwich:
                     submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.random_resource_aware_model()
                     param1 = submodel.config.arch
-                    self.single_step(submodel, inputs, 'Medium', do_test)
+                    self.single_step(submodel, inputs, 'Medium', do_test, teacher_logits)
                     submodels.append(('Medium', submodel))
 
-                    a1,a2 = self.count_intermediate_outputs(submodel)
-                    a3 = compute_global_ffn_allocation(self.supermodel.model, target_param=a2,compute_score='magnitude',removed_layers=submodel.config.arch['remove_layer_idx'])
-                    
 
-                    #a4 = compute_global_ffn_allocation(self.supermodel.model, a2,'wanda',self.reorder_dataloader)
-                    # create a model based on the a4
+                    if do_test:
 
-                    submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.smart_resource_aware_model(a3,submodel.config.arch['remove_layer_idx'])
-                    param2 = submodel.config.arch
-                    self.single_step(submodel, inputs, 'Smart', do_test)
+                        a1,a2 = self.count_intermediate_outputs(submodel)
+                        a3 = compute_global_ffn_allocation(self.supermodel.model, target_param=a2,compute_score='magnitude',removed_layers=submodel.config.arch['remove_layer_idx'])
+                        self.logger.info(f"Global FFN allocation: {str(a3.items())}")
+
+                        #a4 = compute_global_ffn_allocation(self.supermodel.model, a2,'wanda',self.reorder_dataloader)
+                        # create a model based on the a4
+
+                        submodel, submodel.config.num_parameters, submodel.config.arch = self.supermodel.smart_resource_aware_model(a3,submodel.config.arch['remove_layer_idx'])
+                        # param2 = submodel.config.arch
+                        # self.single_step(submodel, inputs, 'Smart', do_test)
+                        accuracy , _, _ =self.eval(submodel)
+                        self.logger.info(f'\tSmart submodel accuracy: {accuracy:.4f}')
 
 
                     # def compare_inter_hidden(param1, param2):

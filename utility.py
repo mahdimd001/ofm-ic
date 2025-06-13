@@ -598,7 +598,7 @@ def get_trainable_parameters(model,trainable):
         elif model.config.model_type.lower() == 'vit':
             if 'e' not in trainable:
                 for name, param in model.named_parameters():
-                    if name.startswith("vit"):
+                    if name.startswith("vit.encoder"):
                         param.requires_grad_(False)
             if 'm' not in trainable:
                 for name, param in model.named_parameters():
@@ -611,7 +611,7 @@ def get_trainable_parameters(model,trainable):
             
             trainable_params = []
             if 'e' in trainable:
-                trainable_params += list(model.vit.parameters())
+                trainable_params += list(model.vit.encoder.parameters())
             if 'm' in trainable:
                 trainable_params += list(model.classifier.parameters())
             if 'p' in trainable:

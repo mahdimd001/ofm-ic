@@ -1,7 +1,6 @@
-import os
 import datetime
 import torch
-from datasets import load_dataset
+from datasets import load_dataset,Image as DatasetImage
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 from torch.utils.data import DataLoader, Subset
 from ofm.modeling_ofm import OFM
@@ -9,13 +8,15 @@ from IC_NAS_Trainer import IC_NAS_Trainer
 from IC_arguments import arguments
 from logger import init_logs, get_logger
 from IC_custom_transforms import transform, collate_fn
-import evaluate
 import functools
 import timeit
-import numpy as np
 import sys
-import os
 from huggingface_hub import login
+from PIL import Image
+from io import BytesIO
+
+
+
 
 
 def main(args):
@@ -55,12 +56,15 @@ def main(args):
             dataset["validation"] = train_val["test"]
         if args.subsample == True:
             args.logger.info("Subsampling ImageNet-1k: 5000 training, 1000 validation images")
-            train_subset = dataset["train"].train_test_split(train_size=100000, seed=123, stratify_by_column="label")["train"]
-            val_subset = dataset["validation"].train_test_split(train_size=20000, seed=123, stratify_by_column="label")["train"]
+            train_subset = dataset["train"].train_test_split(train_size=20000, seed=123, stratify_by_column="label")["train"]
+            val_subset = dataset["validation"].train_test_split(train_size=5000, seed=123, stratify_by_column="label")["train"]
             dataset["train"] = train_subset
             dataset["validation"] = val_subset
         dataset['train'] = dataset['train'].rename_column("image", "img")
         dataset['validation'] = dataset['validation'].rename_column("image", "img")
+
+        #dataset['train'] = dataset['train'].cast_column("img", DatasetImage(decode=False))
+        #dataset['validation'] = dataset['validation'].cast_column("img", DatasetImage(decode=False))
     elif args.dataset == "cifar10": 
         train_val = dataset["train"].train_test_split(test_size=0.2, seed=123)
         dataset["train"] = train_val["train"]
@@ -89,9 +93,43 @@ def main(args):
     #prepared_ds = dataset.with_transform(functools.partial(transform, processor=processor))
 
     def transform(example_batch, processor):
-        inputs = processor([x.convert("RGB") for x in example_batch["img"]], return_tensors="pt")
-        inputs["labels"] = example_batch["label"]
-        return inputs
+        try:
+            inputs = processor([x.convert("RGB") for x in example_batch["img"]], return_tensors="pt")
+            inputs["labels"] = example_batch["label"]
+            return inputs
+        except Exception as e:
+            print(f"Error processing batch: {e}")
+            args.logger.warning(f"Error processing batch: {e}")
+            # Handle the case where images cannot be processed
+            # You can return a dummy input or skip this batch
+            # For now, we will return an empty tensor
+            inputs = processor([Image.new("RGB", (224, 224))], return_tensors="pt")
+            inputs["labels"] = torch.tensor([-1])
+            return inputs
+        # images = []
+        # labels = []
+
+        # for img_info, label in zip(example_batch["img"], example_batch["label"]):
+        #     try:
+        #         img_bytes = img_info["bytes"]
+        #         img = Image.open(BytesIO(img_bytes)).convert("RGB")
+        #         images.append(img)
+        #         labels.append(label)
+        #     except Exception as e:
+        #         print(f"Skipping corrupted image: {e}")
+        #         args.logger.warning(f"Skipping corrupted image.")
+                
+
+        # if not images:
+        #     # Return dummy image and label if all failed
+        #     dummy_input = processor([Image.new("RGB", (224, 224))], return_tensors="pt")
+        #     dummy_input["labels"] = torch.tensor([-1])
+        #     args.logger.warning(f"all images are corrupted, returning dummy input.")
+        #     return dummy_input
+
+        # inputs = processor(images, return_tensors="pt")
+        # inputs["labels"] = torch.tensor(labels)
+        # return inputs
 
     prepared_ds = {
     "train": dataset["train"].with_transform(functools.partial(transform, processor=processor)),
@@ -109,23 +147,26 @@ def main(args):
     print("loading pretrained model...")
     # Initialize model
     model = AutoModelForImageClassification.from_pretrained(
-        args.model_name,
+        '/work/LAS/jannesar-lab/msamani/bestmodel/best_model_iter2.pt',
+        #args.model_name,
         num_labels=len(labels),
         id2label={str(i): c for i, c in enumerate(labels)},
         label2id={c: str(i) for i, c in enumerate(labels)},
         ignore_mismatched_sizes=True,
         cache_dir=args.cache_dir,
+        trust_remote_code=True,
+        use_safetensors=True
     )
 
 
     # Reordering dataset
     # Create a subset and apply the same transform as the main dataset
-    reordering_subset = dataset["train"].select(range(0, 2 * args.batch_size, 1)).with_transform(
+    reordering_subset = dataset["train"].select(range(0, 20 * args.batch_size, 1)).with_transform(
         functools.partial(transform, processor=processor)
     )
     reorder_dataloader = DataLoader(
         reordering_subset, 
-        batch_size=8,  # Match main batch size for consistency
+        batch_size=args.batch_size,  # Match main batch size for consistency
         shuffle=False, 
         num_workers=2, 
         pin_memory=True, 
@@ -168,15 +209,15 @@ def main(args):
         elastic_config = {
             "atten_out_space": [192],
             # work on this
-            "inter_hidden_space": [192, 288, 384, 576, 768],
+            "inter_hidden_space": [384, 576, 768],
             "residual_hidden": [192],
         }
         config = {
-            str(i): elastic_config if i in [1,2, 3,4,5,6,7,8,9,10,11] else regular_config for i in range(12)
+            str(i): elastic_config if i in [1,2, 3,4,5,6,7,8,9,10] else regular_config for i in range(12)
         }
         config["layer_elastic"] = {
-            "elastic_layer_idx": [2,3,6,7,8],
-            "remove_layer_prob": [.5, 0.5, 0.5, 0.5, 0.5]
+            "elastic_layer_idx": [5,10],
+            "remove_layer_prob": [.5, 0.5]
         }
     elif args.model_name == "facebook/deit-small-patch16-224":
         # Define elastic config for NAS
@@ -195,8 +236,8 @@ def main(args):
             str(i): elastic_config if i in [1,2, 3,4,5,6,7,8,9,10,11] else regular_config for i in range(12)
         }
         config["layer_elastic"] = {
-            "elastic_layer_idx": [2,3,6,7,8],
-            "remove_layer_prob": [.5, 0.5, 0.5, 0.5, 0.5]
+            "elastic_layer_idx": [5,7,10],
+            "remove_layer_prob": [.5, 0.5, 0.5]
         }
     print("loading ofm model...")
     # Wrap model with OFM for NAS
@@ -223,16 +264,16 @@ def main(args):
     args.logger.info(f'Pre-trained model size: {ofm.total_params} params \t Accuracy: {accuracy*100:.2f}% \t Time: {round(end_test - start_test, 4)} seconds')
 
     
-    # for i in range(args.finetune_epoches):
-    #     args.logger.info(f'Fine-tuning epoch {i+1}/{args.finetune_epoches}')
-    #     start_finetune = timeit.default_timer()
-    #     trainer.fine_tune(args.finetune_epoches)
-    #     end_finetune = timeit.default_timer()
-    #     args.logger.info(f'Fine-tuning epoch {i+1} completed in {round(end_finetune - start_finetune, 4)} seconds, Accuracy: {accuracy*100:.2f}%')
+    for i in range(args.finetune_epoches):
+        args.logger.info(f'Fine-tuning epoch {i+1}/{args.finetune_epoches}')
+        start_finetune = timeit.default_timer()
+        trainer.fine_tune(args.finetune_epoches)
+        end_finetune = timeit.default_timer()
+        args.logger.info(f'Fine-tuning epoch {i+1} completed in {round(end_finetune - start_finetune, 4)} seconds, Accuracy: {accuracy*100:.2f}%')
     
     
     
-    # Evaluate supernet
+    #Evaluate supernet
     # start_test = timeit.default_timer()
     # accuracy, _, _ = trainer.eval(args.supermodel.model)
     # end_test = timeit.default_timer()
