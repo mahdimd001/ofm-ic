@@ -179,4 +179,4 @@ scripts/eval/*
 
 #Images
 *.jpg
-*.pngckpt_360.pth
+ckpt_360.pth
